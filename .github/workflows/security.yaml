@@ -1,0 +1,77 @@
+name: Security
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  schedule:
+    # Weekly on Monday at 20:00 UTC. GitHub often starts scheduled runs a few hours late.
+    - cron: "0 20 * * 1"
+  workflow_dispatch:
+
+# A pull request run is cancelled by a newer push to the same branch. A run on main, a scheduled run and a manual run each get a group
+# of their own, so a later push never cancels or replaces them and their published results are not lost.
+concurrency:
+  group: security-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions: {}
+
+jobs:
+  secret-scan:
+    name: Secret scan (gitleaks)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      # The CLI runs directly because the gitleaks action needs a license for some accounts.
+      # --redact hides the secret in the log and in the SARIF snippet that is uploaded, so a finding does not make one more copy of it
+      - name: Gitleaks
+        run: |
+          docker run --rm -v "$PWD:/repo" "$(bash ./.github/tools/image.sh gitleaks)" \
+            detect --source /repo --no-banner --redact --report-format sarif --report-path /repo/gitleaks-results.sarif -v
+
+      - name: Upload gitleaks results to code scanning
+        if: ${{ !cancelled() && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
+        uses: github/codeql-action/upload-sarif@24c54180a607b1449ed407dd24f251e4e9147c8d # v4.38.3
+        with:
+          sarif_file: gitleaks-results.sarif
+          category: gitleaks
+
+  # Scorecard only accepts runs on the default branch, so it skips pull requests and manual runs from other branches
+  scorecard:
+    name: OSSF Scorecard
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      security-events: write
+      id-token: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Run analysis
+        uses: ossf/scorecard-action@fa7117db83c52d787ae5a89f350999701505d78e # v2.5.0
+        with:
+          results_file: scorecard-results.sarif
+          results_format: sarif
+          publish_results: true
+
+      - name: Upload Scorecard results to code scanning
+        uses: github/codeql-action/upload-sarif@24c54180a607b1449ed407dd24f251e4e9147c8d # v4.38.3
+        with:
+          sarif_file: scorecard-results.sarif
+          category: scorecard

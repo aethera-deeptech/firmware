@@ -1,0 +1,37 @@
+name: Feature request
+description: Suggest an improvement or a new capability
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem would this solve?
+      description: Describe the need before the solution.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: What would you like to see?
+      description: The behavior or the setting you have in mind.
+    validations:
+      required: true
+  - type: dropdown
+    id: device
+    attributes:
+      label: Device
+      options:
+        - Hub (gateway)
+        - Plug
+        - Clamp
+        - All devices
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+  - type: checkboxes
+    id: contribute
+    attributes:
+      label: Contribution
+      options:
+        - label: I am willing to open a pull request for this.
