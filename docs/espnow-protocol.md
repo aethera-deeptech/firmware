@@ -30,10 +30,10 @@ The frames of the encrypted types have the payload followed by a tag of 16 bytes
 
 | Type | Name | Direction | Encrypted | Payload |
 | :--- | :--- | :--- | :--- | :--- |
-| 0x01 | HELLO | node to broadcast | no | kind (1 byte), firmware version (3 bytes) |
+| 0x01 | HELLO | node to broadcast | no | kind (1 byte), firmware version (3 bytes, major then minor then patch, one byte each) |
 | 0x02 | HELLO_ACK | hub to node | no | none, the channel is the one that carried the frame |
-| 0x10 | PAIR_REQUEST | node to hub | no | kind (1 byte), X25519 public key (32 bytes) |
-| 0x11 | PAIR_ACCEPT | hub to node | no | X25519 public key (32 bytes) |
+| 0x10 | PAIR_REQUEST | node to hub | no | kind (1 byte, 1 for `plug` and 2 for `clamp`), X25519 public key (32 bytes) |
+| 0x11 | PAIR_ACCEPT | hub to node | no | X25519 public key of the hub (32 bytes), then the X25519 public key of the node from the request that it answers (32 bytes) |
 | 0x20 | TELEMETRY | node to hub | yes | `bootId` of the hub as the node last saw it (4 bytes), sample count (1 byte), then the samples |
 | 0x21 | ACK | hub to node | yes | `bootId` of the node (4 bytes), highest `sampleSeq` that the hub received (2 bytes) |
 | 0x30 | COMMAND | hub to node | yes | echo (8 bytes, the `bootId` and the `counter` of a TELEMETRY frame of the node), command number (2 bytes), action (1 byte) |
@@ -75,10 +75,10 @@ A TELEMETRY frame holds 1 to 8 samples of 23 bytes each, which makes a frame of 
 ## Pairing and keys
 
 - The hub has a pairing window that opens when the owner presses a button on the hub and closes after one pairing or after 60 seconds. The hub shows the id of the node on its display. A node asks for pairing when the owner holds its button for 3 seconds, and stops after 60 seconds. A short press on a paired node does nothing.
-- The node sends PAIR_REQUEST with a new X25519 public key. The hub, inside its window, answers PAIR_ACCEPT with its own new key. A node ignores a PAIR_ACCEPT that does not answer its own request, and both sides refuse a shared secret that is all zero.
-- Each side keeps the new key as pending. The hub keeps it until the first valid frame or until the window ends. The node commits it when it sends its first TELEMETRY frame, and the hub commits it when it verifies that frame, and then the window closes. When PAIR_ACCEPT is lost, or the window ends first, nothing is committed and the owner pairs again. The node also stores the MAC of the hub, and a paired node accepts HELLO_ACK and ACK only from that MAC.
+- The node sends PAIR_REQUEST with a new X25519 public key. The hub, inside its window, answers PAIR_ACCEPT with its own new key and the node key from that request. A node ignores a PAIR_ACCEPT whose echoed node key is not the key of its own pending request, and both sides refuse a shared secret that is all zero.
+- Each side keeps the new key as pending. The node sends its first TELEMETRY frame with the pending key and commits the key only when it receives the ACK for that frame. The hub accepts the first TELEMETRY frame and its repeats with the pending key, commits the key when it verifies a frame, and answers with the ACK, and then the window closes. When PAIR_ACCEPT is lost, or the window ends first, nothing is committed and the owner pairs again. The node also stores the MAC of the hub, and a paired node accepts HELLO_ACK and ACK only from that MAC.
 - The hub refuses a node that it already knows, and it shows the message on its display. The owner removes the node on the hub first, and then pairs it again. A node whose button hold of 10 seconds forgot the hub is in this case.
-- Each side takes 16 bytes from HKDF-SHA256 over the shared secret. The salt is the SHA-256 of the text `wattlink-espnow-v1`. The info field is the public key of the node, the public key of the hub, the MAC of the node and the MAC of the hub, in this order. The result is the key of AES-128-GCM for this node.
+- Each side takes 16 bytes from HKDF-SHA256. The input keying material is the 32 bytes of the shared secret. The salt is the 32 bytes of the SHA-256 of the text `wattlink-espnow-v1`. The info field is 76 bytes made by joining, with no separator, the public key of the node (32 bytes), the public key of the hub (32 bytes), the MAC of the node (6 bytes) and the MAC of the hub (6 bytes), in this order and with each MAC in the order of its bytes as the radio prints it. The output length is 16 bytes, and it is the key of AES-128-GCM for this node.
 - The key lives in the flash of both sides. The hub forgets a node when the owner removes it, and a node forgets the hub when the owner holds its button for 10 seconds, and so the hold of 3 seconds pairs and the hold of 10 seconds forgets. A device keeps the key in plain flash, so someone with physical access can read it unless flash encryption is turned on.
 - Limit of the design. Someone who is close to the devices during the pairing window and who can transmit can pair as a node, or answer as the hub. The window is short and the owner opens it on purpose and sees the node id, but the exchange has no check that the owner could make of the other device. After pairing, the traffic is encrypted and authenticated and the hub only accepts the paired nodes.
 
