@@ -10,9 +10,10 @@ on:
     - cron: "0 20 * * 1"
   workflow_dispatch:
 
+# A pull request run is cancelled by a newer push to the same branch. A run on main, a scheduled run and a manual run each get a group
+# of their own, so a later push never cancels or replaces them and their published results are not lost.
 concurrency:
-  group: security-${{ github.workflow }}-${{ github.ref }}
-  # a scheduled or manual run on main is never cancelled by a later push, so published results are not lost
+  group: security-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions: {}
