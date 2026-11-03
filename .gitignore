@@ -1,0 +1,35 @@
+# PlatformIO build output and tool downloads
+.pio/
+.pioenvs/
+.piolibdeps/
+build/
+*.elf
+*.bin
+*.map
+
+# Local configuration. An example file is committed, and the pattern matches in every folder.
+.env
+.env.*
+!.env.example
+.envrc
+
+# Secrets for Wi-Fi, keys and certificates stay out of the repository. A device reads them from a header that is not committed.
+secrets.h
+*.pem
+*.key
+
+# Logs
+*.log
+
+# Tool downloads
+node_modules/
+dist/
+
+# Python bytecode
+__pycache__/
+*.pyc
+
+# Editors and OS
+.idea/
+.vscode/
+.DS_Store
