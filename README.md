@@ -6,6 +6,7 @@
 [![Last commit](https://img.shields.io/github/last-commit/aethera-deeptech/firmware)](https://github.com/aethera-deeptech/firmware/commits/main)
 [![Conventional Commits](https://img.shields.io/badge/Conventional%20Commits-1.0.0-fe5196?logo=conventionalcommits&logoColor=white)](https://www.conventionalcommits.org/)
 [![Renovate](https://img.shields.io/badge/renovate-enabled-brightgreen?logo=renovatebot)](https://docs.renovatebot.com/)
+[![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/aethera-deeptech/firmware/badge)](https://scorecard.dev/viewer/?uri=github.com/aethera-deeptech/firmware)
 
 Firmware for the devices of WATTLINK, an energy audit dashboard for small businesses in Indonesia. A plug or a current clamp measures power and sends it to a hub. The hub sends the readings to the [backend](https://github.com/aethera-deeptech/backend) over HTTPS.
 
