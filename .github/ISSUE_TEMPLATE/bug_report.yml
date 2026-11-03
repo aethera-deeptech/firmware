@@ -1,0 +1,49 @@
+name: Bug report
+description: A device or its firmware behaves wrongly
+labels: ["bug"]
+body:
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: Describe the wrong behavior and what you expected instead.
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+      description: The steps, one by one, with any Wi-Fi name, key or address removed.
+    validations:
+      required: true
+  - type: dropdown
+    id: device
+    attributes:
+      label: Device
+      options:
+        - Hub (gateway)
+        - Plug
+        - Clamp
+        - Not sure
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Firmware version
+      description: The release or the commit you built.
+  - type: textarea
+    id: logs
+    attributes:
+      label: Serial log
+      description: The output of the serial monitor, if it helps. Remove keys, tokens and Wi-Fi passwords first.
+      render: text
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Before submitting
+      options:
+        - label: This is not a security problem. Those go through the private report in SECURITY.md.
+          required: true
+        - label: I removed secrets and personal data from everything above.
+          required: true
