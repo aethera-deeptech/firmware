@@ -31,7 +31,7 @@ Names are checked in the pull request, so it is quicker to follow them from the 
 - The title is a Conventional Commit, such as `fix(gateway): keep the sequence number after a restart`. Write the scope in lowercase, with letters, digits, dots, slashes, underscores or hyphens only, because the title check refuses other scopes. The "Conventional commits" check blocks the merge when the title or any commit other than an Update branch merge does not follow it.
 - The body is only the list of commits in the pull request, one hyphen bullet per commit. The check accepts lines that start with a hyphen and text, so other bullet marks and indented sub bullets fail. The check does not count the bullets, so keep them in step with the commits yourself.
 - Name the branch `type/short-description`, with the type of the commits, such as `fix/sequence-number`.
-- Add one label, `bug` for fixes, `enhancement` for features and `documentation` for documentation only, and assign the pull request to yourself.
+- Add one label, `bug` for fixes, `enhancement` for features and `documentation` for documentation only, and assign the pull request to yourself. If you have no permission to add a label or an assignee, ask a maintainer in a comment on the pull request, because the check cannot pass without them.
 - The "PR format" check blocks the merge when the branch name, the label, the assignee or the body does not follow this. Add what is missing and the check runs again by itself. A rerun from the checks tab also reads the pull request as it is now.
 - Pull requests are merged with a merge commit, never squashed or rebased.
 - Every required check must pass. They are listed in the repository rules and described in [docs/ci-cd.md](docs/ci-cd.md).

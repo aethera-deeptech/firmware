@@ -29,6 +29,9 @@ jobs:
       - name: Lint workflows
         uses: raven-actions/actionlint@3d39aea434753780c3b3d4a1a31c854b4dbf49d7 # v2.2.0
         with:
+          # the version is pinned, because the default is the latest release and a changed release would change the lint result
+          # renovate: datasource=github-releases depName=rhysd/actionlint
+          version: 1.7.12
           cache: false
           fail-on-error: true
 
@@ -101,3 +104,21 @@ jobs:
           # renovate: datasource=npm depName=renovate
           version: 44.174.0
         run: npx --yes --package "renovate@${version}" renovate-config-validator --strict
+
+  shellcheck:
+    name: ShellCheck
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # every file that git tracks with the .sh ending, ShellCheck is installed on the runner image
+      - name: ShellCheck
+        run: |
+          mapfile -d '' files < <(git ls-files -z '*.sh')
+          shellcheck "${files[@]}"

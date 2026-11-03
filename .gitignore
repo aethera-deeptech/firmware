@@ -4,7 +4,6 @@
 .piolibdeps/
 build/
 *.elf
-*.bin
 *.map
 
 # Local configuration. An example file is committed, and the pattern matches in every folder.
@@ -15,7 +14,7 @@ build/
 
 # Secrets for Wi-Fi, keys and certificates stay out of the repository. A device reads them from a header that is not committed.
 secrets.h
-*.pem
+private*.pem
 *.key
 
 # Logs

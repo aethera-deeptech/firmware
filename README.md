@@ -11,11 +11,11 @@ Firmware for the devices of WATTLINK, an energy audit dashboard for small busine
 
 ## Devices
 
-| Device | Board | Job |
-| :--- | :--- | :--- |
-| Hub | ESP32 DevKit V1 | Collects the readings of the nodes over ESP-NOW and sends them to the backend |
-| Plug | ESP32-C3 SuperMini | Measures one appliance with a PZEM-004T and switches it with a relay |
-| Clamp | ESP32-C3 SuperMini | Measures one machine with a PZEM-004T and a split-core current transformer |
+| Device | Job |
+| :--- | :--- |
+| Hub (gateway) | Collects the readings of the nodes over ESP-NOW and sends them to the backend |
+| Plug | Measures one appliance and switches it with a relay |
+| Clamp | Measures one machine with a split-core current transformer |
 
 ## Stack
 
