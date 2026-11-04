@@ -9,14 +9,15 @@ This page lists every workflow, every required check and the rules of the reposi
 | `commits.yaml` | pull requests | Conventional commits |
 | `prformat.yaml` | pull requests | PR format |
 | `config.yaml` | pull requests, `main`, manual | Actionlint, Zizmor, ShellCheck, File names, Renovate config |
-| `security.yaml` | pull requests, `main`, weekly, manual | Secret scan (gitleaks), OSSF Scorecard |
+| `security.yaml` | pull requests, `main`, weekly, manual | Dependency review, Secret scan (gitleaks), OSSF Scorecard |
 
 - Every workflow starts with `permissions: {}` and grants each job only what it needs. Every action is pinned to a full commit SHA with its version in a comment, and checkouts do not keep the token.
 - `commits.yaml` and `prformat.yaml` never cancel a run, because GitHub keeps a cancelled run of a required check as unmet.
 - OSSF Scorecard runs only on `main` and never on a pull request. It is not a required check.
 - The tool images that workflows start with `docker run` are listed in `.github/tools/Dockerfile`, so Renovate can update them. The script `.github/tools/image.sh` prints the image of one stage.
 - A version in a workflow that has a `renovate` comment above it is updated by Renovate through the custom manager in `renovate.json`.
-- The workflows for the device builds, the tests, the dependency review and the releases are added with the first device folder. Dependency review needs the dependency graph of the repository and a manifest to read, and neither exists yet.
+- The workflows for the device builds, the tests and the releases are added with the first device folder.
+- Dependency review needs the dependency graph of the repository, which is on. It only runs on pull requests and fails on a new dependency with a vulnerability of high severity or worse.
 - The Dockerfile in `.github/tools` is never built, so it has no Hadolint job.
 - The Actionlint version is pinned in `config.yaml` with a `renovate` comment, so Renovate raises it like the other tools.
 
