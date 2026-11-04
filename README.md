@@ -35,6 +35,7 @@ No setting exists yet. The settings of each device are listed here when its fold
 ## Documentation
 
 - [Firmware guide of the backend](https://github.com/aethera-deeptech/backend/blob/main/docs/firmware-guide.md) is the contract that the hub follows.
+- [docs/espnow-protocol.md](docs/espnow-protocol.md) describes the frames between the nodes and the hub.
 - [CONTRIBUTING.md](CONTRIBUTING.md) explains how to make a change.
 - [docs/ci-cd.md](docs/ci-cd.md) lists every workflow and every required check.
 - [SECURITY.md](SECURITY.md) says how to report a vulnerability.
