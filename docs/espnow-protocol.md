@@ -86,7 +86,7 @@ A TELEMETRY frame holds 1 to 8 samples of 25 bytes each, which makes a frame of 
 
 The hub has one button. A short press opens the pairing window, and a hold of 3 seconds on the hub starts the captive portal for the Wi-Fi settings, which is part of the firmware of the hub and not of this protocol.
 
-- A press shorter than about 50 ms is bounce and is ignored.
+- A press shorter than 50 ms is bounce and is ignored. The threshold is exactly 50 ms, measured from the first low reading to the first high reading, and a press of exactly 50 ms counts as a short press.
 - While the button is held, the portal starts as soon as 3 seconds have passed, without waiting for the release, and that press is marked as used.
 - When the button is released, the hub opens the pairing window only if the press lasted from 50 ms up to less than 3 seconds and was not already used by the portal. A long hold therefore never also opens the pairing window, and the window opens a moment after the finger lifts and not at the moment of the press.
 - A short press while the pairing window is open does nothing, so it never restarts the window or disturbs a pairing that is in progress.
