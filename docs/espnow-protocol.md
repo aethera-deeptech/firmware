@@ -74,7 +74,7 @@ A TELEMETRY frame holds 1 to 8 samples of 25 bytes each, which makes a frame of 
 
 ## Pairing and keys
 
-- The hub has a pairing window that opens when the owner presses the button of the hub briefly, as the section on the hub button says, and closes after one pairing or after 60 seconds. The hub shows the id of the node on its display. A node asks for pairing when the owner holds its button for 3 seconds, and stops after 60 seconds. A short press on a paired node does nothing.
+- The hub has a pairing window that opens when the owner presses the button of the hub briefly, as the section The button of the hub says, and closes after one pairing or after 60 seconds. The hub shows the id of the node on its display. A node asks for pairing when the owner holds its own button for 3 seconds, and stops after 60 seconds. A short press on a paired node does nothing.
 - The node sends PAIR_REQUEST with a new X25519 public key. The hub, inside its window, answers PAIR_ACCEPT with its own new key and the node key from that request. A node ignores a PAIR_ACCEPT whose echoed node key is not the key of its own pending request, and both sides refuse a shared secret that is all zero.
 - Each side keeps the new key as pending. The node sends its first TELEMETRY frame with the pending key and commits the key only when it receives the ACK for that frame. The hub commits the key when it verifies the first TELEMETRY frame and answers with the ACK, and then the window closes. The committed key is the same key as the pending one, so the hub also verifies every repeat of that frame and answers each repeat with an ACK. A lost ACK therefore only makes the node send again, and the two sides never hold different keys. When PAIR_ACCEPT is lost, or the window ends first, nothing is committed and the owner pairs again. The node also stores the MAC of the hub, and a paired node accepts HELLO_ACK and ACK only from that MAC.
 - The hub refuses a node that it already knows, and it shows the message on its display. The owner removes the node on the hub first, and then pairs it again. A node whose button hold of 10 seconds forgot the hub is in this case.
@@ -84,13 +84,15 @@ A TELEMETRY frame holds 1 to 8 samples of 25 bytes each, which makes a frame of 
 
 ## The button of the hub
 
-The hub has one button. A short press opens the pairing window, and a hold of 3 seconds starts the captive portal for the Wi-Fi settings, which is part of the firmware of the hub and not of this protocol.
+The hub has one button. A short press opens the pairing window, and a hold of 3 seconds on the hub starts the captive portal for the Wi-Fi settings, which is part of the firmware of the hub and not of this protocol.
 
 - A press shorter than about 50 ms is bounce and is ignored.
 - While the button is held, the portal starts as soon as 3 seconds have passed, without waiting for the release, and that press is marked as used.
 - When the button is released, the hub opens the pairing window only if the press lasted from 50 ms up to less than 3 seconds and was not already used by the portal. A long hold therefore never also opens the pairing window, and the window opens a moment after the finger lifts and not at the moment of the press.
+- A short press while the pairing window is open does nothing, so it never restarts the window or disturbs a pairing that is in progress.
+- Starting the portal closes the pairing window, and the hub ignores the button while the portal runs. What the portal does to the ESP-NOW link while it runs, and how it ends, belong to the firmware of the hub.
 - The display of the hub shows which action started, for example `PAIRING 60s` or `PORTAL`.
-- The button is read only after the hub has finished starting. A low level at power up is never a request, because the first test button of the hub is on a pin that the chip reads at reset to choose its boot mode. The pin is one constant in the configuration of the firmware, so a later external button needs no other change.
+- The button is read only after the hub has finished starting. A button that is already pressed at that moment is ignored until the hub has seen it released, and presses are timed from the next press. This holds because the first test button of the hub is on a pin that the chip reads at reset to choose its boot mode, so a hold at power up never reaches the firmware there, and a hub that restarts by itself while the owner holds the button behaves the same way. The pin is one constant in the configuration of the firmware, so a later external button needs no other change.
 
 ## Order and repeats
 
