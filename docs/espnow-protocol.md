@@ -12,7 +12,7 @@ This page describes version 1 of the frames that a node (Plug or Clamp) and the 
 ## Identity
 
 - A node is identified by the MAC address of its radio. The hub builds the `nodeId` for the backend from the kind and the last 3 bytes of the MAC, for example `PLUG-A1B2C3` or `CLAMP-A1B2C3`. The id stays the same after a restart, because the backend counts every different id of a gateway and keeps at most 64 for ever.
-- The hub keeps in flash every distinct id that it ever reported to the backend. It refuses to pair a node that is still paired, and it refuses a new id when it has reported 64. Removing a node forgets its pairing, but its id keeps its slot. A node that is removed and paired again has the same MAC and so the same id, and it costs no new slot. A replaced node has a new MAC and takes a new slot for ever, so 64 ids is a hard limit for the life of a gateway.
+- The hub keeps in flash every distinct id that it ever reported to the backend. It keeps the full MAC with each id. It refuses to pair a node that is still paired, it refuses a node whose id is kept for a different MAC, and it refuses a new id when it has reported 64. Removing a node forgets its pairing, but its id keeps its slot. A node that is removed and paired again has the same MAC and so the same id, and it costs no new slot. A replaced node has a new MAC and takes a new slot for ever, so 64 ids is a hard limit for the life of a gateway.
 - The kind is `plug` or `clamp`, which are the only kinds that the backend accepts. A Clamp meter is a Clamp for the protocol.
 
 ## Frame layout
@@ -35,17 +35,17 @@ The frames of the encrypted types have the payload followed by a tag of 16 bytes
 | 0x10 | PAIR_REQUEST | node to hub | no | kind (1 byte, 1 for `plug` and 2 for `clamp`), X25519 public key (32 bytes) |
 | 0x11 | PAIR_ACCEPT | hub to node | no | X25519 public key of the hub (32 bytes), then the X25519 public key of the node from the request that it answers (32 bytes) |
 | 0x20 | TELEMETRY | node to hub | yes | `bootId` of the hub as the node last saw it (4 bytes), sample count (1 byte), then the samples |
-| 0x21 | ACK | hub to node | yes | `bootId` of the node (4 bytes), highest `sampleSeq` that the hub received (2 bytes) |
+| 0x21 | ACK | hub to node | yes | `bootId` of the node (4 bytes), highest `sampleSeq` that the hub received (4 bytes) |
 | 0x30 | COMMAND | hub to node | yes | echo (8 bytes, the `bootId` and the `counter` of a TELEMETRY frame of the node), command number (2 bytes), action (1 byte) |
 | 0x31 | RESULT | node to hub | yes | `bootId` of the hub as the node last saw it (4 bytes), command number (2 bytes), ok (1 byte) |
 
 ### Sample
 
-A TELEMETRY frame holds 1 to 8 samples of 23 bytes each, which makes a frame of at most 215 bytes.
+A TELEMETRY frame holds 1 to 8 samples of 25 bytes each, which makes a frame of at most 231 bytes.
 
 | Size | Field | Unit | Maps to |
 | :--- | :--- | :--- | :--- |
-| 2 | `sampleSeq` | number of the sample of the node, counted from 0 at every start and wrapping at 65536 | none, the hub uses it to find a repeat |
+| 4 | `sampleSeq` | number of the sample of the node, counted from 0 at every start and never wrapping, because one start would need more than a thousand years at one sample every 10 seconds to reach 2^32 | none, the hub uses it to find a repeat |
 | 4 | `ageMs` | milliseconds since the node took the sample, set again at every send | `t` |
 | 2 | voltage | 0.1 V | `v` |
 | 2 | current | 0.01 A | `i` |
@@ -58,7 +58,7 @@ A TELEMETRY frame holds 1 to 8 samples of 23 bytes each, which makes a frame of 
 
 - A node has no clock that matters, so it sends the age of the sample. The hub subtracts the age from its own time when the frame arrives and so makes `t`. This keeps one clock in the system, the one of the hub. The hub holds samples until its clock is set, because the backend refuses a time before 1700000000.
 - A value that the node cannot measure is sent as the maximum of its field (all bits set), and the hub leaves it out of the batch. A Clamp sends 255 for the relay, because the backend takes relay commands and the relay state from a plug only.
-- A frame that is sent again has a new `counter` and a new `ageMs` and is encrypted again, and it holds the oldest samples that the hub has not acknowledged. The hub drops a sample whose `sampleSeq` it already has for the same `bootId`, and it sends an ACK also for a frame that holds only repeats. The hub treats every sample before the first sample of a frame as lost for good, and a sample that it dropped as received, so a gap never stops the ACK. A sample is new when its `sampleSeq` is more than 0 and less than 32768 ahead of the last one that the hub stored, counted in a circle. A difference of exactly 32768 is ambiguous and is not new. The hub keeps this only in RAM.
+- A frame that is sent again has a new `counter` and a new `ageMs` and is encrypted again, and it holds the oldest samples that the hub has not acknowledged. The hub drops a sample whose `sampleSeq` it already has for the same `bootId`, and it sends an ACK also for a frame that holds only repeats. The hub treats every sample before the first sample of a frame as lost for good, and a sample that it dropped as received, so a gap never stops the ACK. A sample is new when its `sampleSeq` is higher than the last one that the hub stored for the same `bootId`. The hub keeps this only in RAM, so after a restart of the hub the first sample that it receives from a node is new, and a new `bootId` of the node starts the count again.
 - A node keeps the samples that are not acknowledged, up to 64 samples, which is a little more than 10 minutes. When the buffer is full, it drops the oldest sample first. A node ignores an ACK whose `bootId` is not its own or whose `sampleSeq` is above its newest sample. When more than 8 samples wait, it sends the oldest 8 and then sends the next frame 1 second later, until fewer than 8 wait.
 - The ACK means that the hub holds the sample in its memory and not that the backend has it. A hub that restarts can lose up to 30 seconds of samples, and a sample that arrives again after the restart may reach the backend twice with a shifted time.
 - The hub drops the whole sample when its power is missing or out of the range of the contract, because the backend needs the power. It leaves out any other field that is out of range, so the backend does not refuse the sample.
