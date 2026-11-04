@@ -37,6 +37,8 @@ jobs:
         uses: actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294 # v5.0.0
         with:
           fail-on-severity: high
+          # the action reads only the runtime scope by default, so the other scopes are named to cover every dependency
+          fail-on-scopes: runtime, development, unknown
           comment-summary-in-pr: never
 
   secret-scan:
