@@ -12,7 +12,7 @@ This page describes version 1 of the frames that a node (Plug or Clamp) and the 
 ## Identity
 
 - A node is identified by the MAC address of its radio. The hub builds the `nodeId` for the backend from the kind and the last 3 bytes of the MAC, for example `PLUG-A1B2C3` or `CLAMP-A1B2C3`. The id stays the same after a restart, because the backend counts every different id of a gateway and keeps at most 64 for ever.
-- The hub keeps in flash every distinct id that it ever reported to the backend. It refuses to pair a node whose id it already knows, and it refuses a new id when it has reported 64. A node that is removed and paired again has the same MAC and so the same id, and it costs no new slot. A replaced node has a new MAC and takes a new slot for ever, so 64 ids is a hard limit for the life of a gateway.
+- The hub keeps in flash every distinct id that it ever reported to the backend. It refuses to pair a node that is still paired, and it refuses a new id when it has reported 64. Removing a node forgets its pairing, but its id keeps its slot. A node that is removed and paired again has the same MAC and so the same id, and it costs no new slot. A replaced node has a new MAC and takes a new slot for ever, so 64 ids is a hard limit for the life of a gateway.
 - The kind is `plug` or `clamp`, which are the only kinds that the backend accepts. A Clamp meter is a Clamp for the protocol.
 
 ## Frame layout
@@ -50,7 +50,7 @@ A TELEMETRY frame holds 1 to 8 samples of 23 bytes each, which makes a frame of 
 | 2 | voltage | 0.1 V | `v` |
 | 2 | current | 0.01 A | `i` |
 | 4 | power | 0.1 W | `p` |
-| 4 | energy | Wh | `e` |
+| 4 | energy | Wh | `e` (the hub divides it by 1000, because the backend takes kWh) |
 | 2 | frequency | 0.1 Hz | `f` |
 | 1 | power factor | 0.01 | `pf` |
 | 1 | condition | 0 normal, 1 standby, 2 motor degradation, 3 overload | `a` |
@@ -58,11 +58,11 @@ A TELEMETRY frame holds 1 to 8 samples of 23 bytes each, which makes a frame of 
 
 - A node has no clock that matters, so it sends the age of the sample. The hub subtracts the age from its own time when the frame arrives and so makes `t`. This keeps one clock in the system, the one of the hub. The hub holds samples until its clock is set, because the backend refuses a time before 1700000000.
 - A value that the node cannot measure is sent as the maximum of its field (all bits set), and the hub leaves it out of the batch. A Clamp sends 255 for the relay, because the backend takes relay commands and the relay state from a plug only.
-- A frame that is sent again has a new `counter` and a new `ageMs` and is encrypted again, and it holds the oldest samples that the hub has not acknowledged. The hub drops a sample whose `sampleSeq` it already has for the same `bootId`, and it sends an ACK also for a frame that holds only repeats. The hub treats every sample before the first sample of a frame as lost for good, and a sample that it dropped as received, so a gap never stops the ACK. A sample is new when its `sampleSeq` is up to 32768 ahead of the last one that the hub stored, counted in a circle. The hub keeps this only in RAM.
+- A frame that is sent again has a new `counter` and a new `ageMs` and is encrypted again, and it holds the oldest samples that the hub has not acknowledged. The hub drops a sample whose `sampleSeq` it already has for the same `bootId`, and it sends an ACK also for a frame that holds only repeats. The hub treats every sample before the first sample of a frame as lost for good, and a sample that it dropped as received, so a gap never stops the ACK. A sample is new when its `sampleSeq` is more than 0 and less than 32768 ahead of the last one that the hub stored, counted in a circle. A difference of exactly 32768 is ambiguous and is not new. The hub keeps this only in RAM.
 - A node keeps the samples that are not acknowledged, up to 64 samples, which is a little more than 10 minutes. When the buffer is full, it drops the oldest sample first. A node ignores an ACK whose `bootId` is not its own or whose `sampleSeq` is above its newest sample. When more than 8 samples wait, it sends the oldest 8 and then sends the next frame 1 second later, until fewer than 8 wait.
 - The ACK means that the hub holds the sample in its memory and not that the backend has it. A hub that restarts can lose up to 30 seconds of samples, and a sample that arrives again after the restart may reach the backend twice with a shifted time.
 - The hub drops the whole sample when its power is missing or out of the range of the contract, because the backend needs the power. It leaves out any other field that is out of range, so the backend does not refuse the sample.
-- The energy is the counter of the PZEM-004T, which the PZEM keeps in its own memory. The hub sends it in kWh. A counter that falls after a replaced meter is not an error, because the backend then takes the energy of that gap from the power, for at most 5 minutes of it, so a little energy can be lost.
+- The energy is the counter of the PZEM-004T, which the PZEM keeps in its own memory. The node sends this counter in Wh and the hub divides it by 1000 before it sends `e` in kWh. A counter that falls after a replaced meter is not an error, because the backend then takes the energy of that gap from the power, for at most 5 minutes of it, so a little energy can be lost.
 - A Plug sends the power factor only when it is set to motor mode, and a Clamp always sends it. The backend judges every node that sends `pf`, and a charger or a lamp has a low power factor that would raise a false motor alert.
 
 ## Finding the hub
