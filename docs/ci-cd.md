@@ -34,6 +34,7 @@ The ruleset `main` requires a pull request, resolved review threads, verified si
 | ShellCheck | `config.yaml` |
 | File names | `config.yaml` |
 | Renovate config | `config.yaml` |
+| Dependency review | `security.yaml` |
 | Secret scan (gitleaks) | `security.yaml` |
 
 A check is added to the ruleset after it has run once on a pull request, because a required check that never ran blocks every merge. OSSF Scorecard is not required because it never runs on a pull request.
