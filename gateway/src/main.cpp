@@ -3,6 +3,7 @@
 #include "config.h"
 #include "hub-button.h"
 #include "nvs-store.h"
+#include "portal-page.h"
 #include "screen-text.h"
 #include "settings-store.h"
 // The portal code that uses these comes in the next changes. They are included now so that CI builds them for the 32 bit chip.
