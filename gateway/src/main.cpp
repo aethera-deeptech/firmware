@@ -4,17 +4,15 @@
 #include "hub-button.h"
 #include "nvs-store.h"
 #include "oled.h"
-#include "portal-page.h"
+#include "portal.h"
 #include "screen-text.h"
 #include "settings-store.h"
-// The portal code that uses these comes in the next changes. They are included now so that CI builds them for the 32 bit chip.
-#include "setup-session.h"
-#include "wifi-form.h"
 
 static wattlink::ButtonClassifier button;
 static wattlink::Oled oled;
 static wattlink::NvsKeyValueStore flash;
 static wattlink::SettingsStore settings(flash);
+static wattlink::Portal portal(settings, oled);
 
 void setup() {
   Serial.begin(115200);
@@ -37,14 +35,31 @@ void setup() {
 }
 
 void loop() {
+  const uint32_t now = millis();
+
+  if (portal.isRunning()) {
+    // The button is ignored while the portal runs. The portal ends by itself when the settings are saved or the time is over.
+    portal.update(now);
+    if (!portal.isRunning()) {
+      oled.show(wattlink::bootScreen(config::kFirmwareVersion));
+    }
+    delay(2);
+    return;
+  }
+
   const bool pressed = digitalRead(config::kHubButtonPin) == LOW;
 
-  switch (button.update(pressed, millis())) {
+  switch (button.update(pressed, now)) {
     case wattlink::ButtonEvent::Pairing:
       Serial.println("button: open the pairing window");
       break;
     case wattlink::ButtonEvent::Portal:
-      Serial.println("button: start the portal");
+      // The portal refuses to start without a display, because the setup code can only be shown there.
+      if (!portal.start(now)) {
+        Serial.println("Portal: not started");
+        // A start that failed halfway cleared the display, so the boot screen comes back.
+        oled.show(wattlink::bootScreen(config::kFirmwareVersion));
+      }
       break;
     case wattlink::ButtonEvent::None:
       break;

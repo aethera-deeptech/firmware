@@ -14,11 +14,17 @@ class Oled {
   // address and checks that it is acknowledged. A caller that has a secret to show must stop when this returns false.
   bool begin();
 
-  // Draws the screen and clears everything that was there.
+  // True after begin() found the display. A caller that has a secret to show checks this first.
+  bool ready() const { return ready_; }
+
+  // Draws the screen and clears everything that was there. Does nothing when the display is not ready.
   void show(const Screen &screen);
 
-  // Blanks the display.
+  // Blanks the display. Does nothing when the display is not ready.
   void clear();
+
+ private:
+  bool ready_ = false;
 };
 
 }  // namespace wattlink
