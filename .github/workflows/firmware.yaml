@@ -65,10 +65,12 @@ jobs:
           GCOVR_VERSION: "8.8"
         run: pip install "platformio==${PLATFORMIO_VERSION}" "gcovr==${GCOVR_VERSION}"
 
-      - name: Run the host side tests
-        run: |
-          pio test --project-dir gateway --environment native
-          pio test --project-dir common --environment native
+      - name: Run the host side tests of the gateway
+        run: pio test --project-dir gateway --environment native
+
+      - name: Run the host side tests of the common code
+        if: ${{ !cancelled() }}
+        run: pio test --project-dir common --environment native
 
       # PlatformIO has no step for coverage, so gcovr reads the data that the native build wrote, and only the code of the libraries counts.
       # gcov looks for the sources relative to the project folder, so gcovr runs in the folder of each project and writes to the root.
