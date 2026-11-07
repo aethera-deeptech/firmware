@@ -121,6 +121,43 @@ void test_press_across_the_wrap_of_the_millisecond_counter() {
   TEST_ASSERT_EQUAL_INT(1, counts.pairing);
 }
 
+void test_press_of_49_ms_is_bounce() {
+  ButtonClassifier button = started();
+  const Counts counts = press(button, 1000, 49);
+  TEST_ASSERT_EQUAL_INT(0, counts.pairing);
+  TEST_ASSERT_EQUAL_INT(0, counts.portal);
+}
+
+void test_press_of_2999_ms_is_a_short_press() {
+  ButtonClassifier button = started();
+  const Counts counts = press(button, 1000, 2999);
+  TEST_ASSERT_EQUAL_INT(1, counts.pairing);
+  TEST_ASSERT_EQUAL_INT(0, counts.portal);
+}
+
+void test_release_at_exactly_3000_ms_counts_as_the_portal() {
+  ButtonClassifier button = started();
+  const Counts counts = press(button, 1000, 3000);
+  TEST_ASSERT_EQUAL_INT(0, counts.pairing);
+  TEST_ASSERT_EQUAL_INT(1, counts.portal);
+}
+
+void test_hold_across_the_wrap_starts_the_portal_while_held() {
+  ButtonClassifier button = started();
+  const Counts counts = press(button, 0xFFFFFFFFu - 1500, 3500);
+  TEST_ASSERT_EQUAL_INT(1, counts.portalDuringHold);
+  TEST_ASSERT_EQUAL_INT(0, counts.pairing);
+}
+
+void test_short_press_after_a_portal_hold_gives_pairing() {
+  ButtonClassifier button = started();
+  const Counts hold = press(button, 1000, 4000);
+  const Counts next = press(button, 6000, 200);
+  TEST_ASSERT_EQUAL_INT(1, hold.portal);
+  TEST_ASSERT_EQUAL_INT(1, next.pairing);
+  TEST_ASSERT_EQUAL_INT(0, next.portal);
+}
+
 int main(int, char **) {
   UNITY_BEGIN();
   RUN_TEST(test_short_press_opens_pairing_on_release);
@@ -133,5 +170,10 @@ int main(int, char **) {
   RUN_TEST(test_button_down_at_start_up_is_ignored_until_released);
   RUN_TEST(test_two_presses_in_a_row_each_give_one_event);
   RUN_TEST(test_press_across_the_wrap_of_the_millisecond_counter);
+  RUN_TEST(test_press_of_49_ms_is_bounce);
+  RUN_TEST(test_press_of_2999_ms_is_a_short_press);
+  RUN_TEST(test_release_at_exactly_3000_ms_counts_as_the_portal);
+  RUN_TEST(test_hold_across_the_wrap_starts_the_portal_while_held);
+  RUN_TEST(test_short_press_after_a_portal_hold_gives_pairing);
   return UNITY_END();
 }
