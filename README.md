@@ -42,6 +42,7 @@ The Hub has no setting that its owner can change yet. The pins and the version a
 
 ## Project layout
 
+- `common/` holds the code that the Hub and the nodes share, which is the frame codec, the nonce and the key derivation. It has host side tests and no hardware code.
 - `gateway/` holds the firmware of the Hub. The code that does not touch the hardware sits in `gateway/lib/` and is tested on the host.
 - `.github/` holds the workflows, the issue forms and the pull request template.
 - `docs/` holds the project documentation.
