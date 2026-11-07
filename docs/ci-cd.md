@@ -17,7 +17,7 @@ This page lists every workflow, every required check and the rules of the reposi
 - OSSF Scorecard runs only on `main` and never on a pull request. It is not a required check.
 - The tool images that workflows start with `docker run` are listed in `.github/tools/Dockerfile`, so Renovate can update them. The script `.github/tools/image.sh` prints the image of one stage.
 - A version in a workflow that has a `renovate` comment above it is updated by Renovate through the custom manager in `renovate.json`.
-- `firmware.yaml` builds the Hub with PlatformIO and runs the host side tests of `gateway/lib/` with Unity. The tests write coverage data, and gcovr turns it into a report that is uploaded to Codecov. PlatformIO has no step for coverage, so the report is made after the tests. A failed upload fails the job only on `main`.
+- `firmware.yaml` builds the Hub with PlatformIO and runs the host side tests of `gateway/lib/` and of `common/` with Unity. The tests write coverage data, and gcovr turns it into one report for each project that is uploaded to Codecov. The tests of the key derivation use the OpenSSL that the runner image has, to compute the HMAC that mbedTLS computes on the chip. PlatformIO has no step for coverage, so the report is made after the tests. A failed upload fails the job only on `main`.
 - The workflows for the Plug, the Clamp and the releases are added with their folders.
 - Dependency review needs the dependency graph of the repository, which is on. It only runs on pull requests and fails on a new dependency with a vulnerability of high severity or worse. The dependency graph lists only the GitHub Actions of this repository and no PlatformIO manifest, so the check covers the actions of the workflows and not the libraries of the firmware.
 - The Dockerfile in `.github/tools` is never built, so it has no Hadolint job.
@@ -59,7 +59,7 @@ The File names job runs ls-lint with the rules in `.ls-lint.yml`.
 - Files are lowercase words joined by hyphens, and a dot may mark a variant.
 - A Markdown file may also be written in capitals joined by underscores, such as `README.md`.
 - YAML files end with `.yml`, except the workflows, which end with `.yaml`. The name of the workflow file is part of the identity that signs a release file.
-- The issue forms in `.github/ISSUE_TEMPLATE` and the test suites in `gateway/test` are not checked, because PlatformIO names a test folder `test_` followed by the suite. Files with no extension, such as `LICENSE`, `CODEOWNERS` and `Dockerfile`, are not checked either.
+- The issue forms in `.github/ISSUE_TEMPLATE` and the test suites in `gateway/test` and `common/test` are not checked, because PlatformIO names a test folder `test_` followed by the suite. Files with no extension, such as `LICENSE`, `CODEOWNERS` and `Dockerfile`, are not checked either.
 
 ## Dependency updates
 

@@ -26,7 +26,7 @@ Firmware for the devices of WATTLINK, an energy audit dashboard for small busine
 
 ## Quick start
 
-The Hub is the only device with code so far, in `gateway/`. It is a PlatformIO project for the ESP32 DevKit V1 with the Arduino framework, on the espressif32 platform 6.13.0, which ships Arduino-ESP32 2.0.17. CI builds it and runs the host side tests on every pull request, so a board is only needed to see a change work on hardware. To build it yourself, install PlatformIO and run `pio run --project-dir gateway --environment hub`. The tests run with `pio test --project-dir gateway --environment native`. The Plug and the Clamp get their folders when their firmware is ready.
+The Hub is the only device with firmware so far, in `gateway/`, and the code that it will share with the nodes is in `common/`. It is a PlatformIO project for the ESP32 DevKit V1 with the Arduino framework, on the espressif32 platform 6.13.0, which ships Arduino-ESP32 2.0.17. CI builds it and runs the host side tests on every pull request, so a board is only needed to see a change work on hardware. To build it yourself, install PlatformIO and run `pio run --project-dir gateway --environment hub`. The tests run with `pio test --project-dir gateway --environment native` and `pio test --project-dir common --environment native`. The second one links OpenSSL, so it needs the OpenSSL development headers on the machine. The Plug and the Clamp get their folders when their firmware is ready.
 
 ## Configuration
 
@@ -42,6 +42,7 @@ The Hub has no setting that its owner can change yet. The pins and the version a
 
 ## Project layout
 
+- `common/` holds the code that the Hub and the nodes share, which is the frame codec, the nonce and the key derivation. It has host side tests and no hardware code.
 - `gateway/` holds the firmware of the Hub. The code that does not touch the hardware sits in `gateway/lib/` and is tested on the host.
 - `.github/` holds the workflows, the issue forms and the pull request template.
 - `docs/` holds the project documentation.
