@@ -1,0 +1,7 @@
+{
+  "name": "portal-page",
+  "version": "0.1.0",
+  "description": "The setup web page of the hub in Indonesian, and the decision whether to save what the owner typed",
+  "frameworks": "*",
+  "platforms": "*"
+}
