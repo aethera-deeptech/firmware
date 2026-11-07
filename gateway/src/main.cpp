@@ -5,6 +5,7 @@
 #include "hub-button.h"
 #include "nvs-store.h"
 #include "oled.h"
+#include "pairing-window.h"
 #include "portal.h"
 #include "screen-text.h"
 #include "settings-store.h"
@@ -16,6 +17,9 @@ static wattlink::NvsKeyValueStore flash;
 static wattlink::SettingsStore settings(flash);
 static wattlink::Portal portal(settings, oled);
 static wattlink::WifiClient wifi(settings);
+static wattlink::PairingWindow pairing;
+// The seconds that the pairing screen showed last, so it is drawn again only when the number changes. -1 means that it is not on screen.
+static int lastPairingSeconds = -1;
 // What the home screen showed last, so that it is drawn again only when it changes. -1 means that it has to be drawn.
 static int lastHome = -1;
 // The result of the crypto self test stays here, so the pairing code can refuse to start when the chip disagrees with the host tests.
@@ -36,6 +40,29 @@ static void drawHome(bool force) {
   } else {
     oled.show(wattlink::statusScreen(wifi.connected(), false, 0, 0));
   }
+}
+
+// The screen owner. While the pairing window is open its countdown is on the display, and otherwise the home screen is.
+static void drawScreen(uint32_t now) {
+  const wattlink::WindowState window = pairing.update(now);
+  if (window == wattlink::WindowState::Open) {
+    const int seconds = static_cast<int>(pairing.secondsLeft(now));
+    if (seconds != lastPairingSeconds) {
+      lastPairingSeconds = seconds;
+      oled.show(wattlink::pairingScreen(static_cast<unsigned>(seconds)));
+    }
+    return;
+  }
+  if (window == wattlink::WindowState::Pairing) {
+    return;
+  }
+  if (lastPairingSeconds != -1) {
+    // The window just ended, so the home screen comes back.
+    lastPairingSeconds = -1;
+    drawHome(true);
+    return;
+  }
+  drawHome(false);
 }
 
 void setup() {
@@ -79,13 +106,27 @@ void loop() {
   }
 
   wifi.update(now);
-  drawHome(false);
+  drawScreen(now);
 
   const bool pressed = digitalRead(config::kHubButtonPin) == LOW;
 
   switch (button.update(pressed, now)) {
     case wattlink::ButtonEvent::Pairing:
-      Serial.println("button: open the pairing window");
+      // A chip whose crypto disagrees with the host tests must not pair. A result that has not been set counts as failed.
+      if (cryptoResult != wattlink::SelfTestResult::Ok) {
+        Serial.println("Pairing: refused, the crypto self test did not pass");
+        break;
+      }
+      switch (pairing.press(now)) {
+        case wattlink::PressResult::Opened:
+          Serial.println("Pairing: window opened");
+          break;
+        case wattlink::PressResult::Restarted:
+          Serial.println("Pairing: window restarted");
+          break;
+        case wattlink::PressResult::Ignored:
+          break;
+      }
       break;
     case wattlink::ButtonEvent::Portal:
       // The portal refuses to start without a display, because the setup code can only be shown there. That is checked before the link to
@@ -94,7 +135,9 @@ void loop() {
         Serial.println("Portal: not started");
         break;
       }
-      // The setup network needs the radio, so the link is dropped first.
+      // The setup network needs the radio, so the link is dropped first. The portal also closes the pairing window.
+      pairing.close();
+      lastPairingSeconds = -1;
       wifi.stop();
       if (!portal.start(now)) {
         Serial.println("Portal: not started");
