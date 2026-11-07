@@ -1,0 +1,7 @@
+{
+  "name": "settings-store",
+  "version": "0.1.0",
+  "description": "The Wi-Fi settings and the backend key of the hub, on top of a small key and value store",
+  "frameworks": "*",
+  "platforms": "*"
+}
