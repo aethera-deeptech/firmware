@@ -36,6 +36,8 @@ The ruleset `main` requires a pull request, resolved review threads, verified si
 | ShellCheck | `config.yaml` |
 | File names | `config.yaml` |
 | Renovate config | `config.yaml` |
+| Hub build | `firmware.yaml` |
+| Native tests | `firmware.yaml` |
 | Dependency review | `security.yaml` |
 | Secret scan (gitleaks) | `security.yaml` |
 
