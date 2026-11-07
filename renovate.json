@@ -43,8 +43,19 @@
     {
       "description": "the tools that CI starts from a workflow, such as ls-lint and Renovate itself, take the commit type of the workflows",
       "matchManagers": ["custom.regex"],
+      "matchFileNames": [".github/workflows/**"],
       "semanticCommitType": "ci",
       "addLabels": ["github_actions"]
+    },
+    {
+      "description": "version 8 of the espressif32 platform ships the Arduino-ESP32 3.x core, which changes the ESP-NOW API, so it is not offered until the firmware is ported",
+      "matchDepNames": ["platformio/platform-espressif32"],
+      "allowedVersions": "<8"
+    },
+    {
+      "description": "the platform of the firmware is part of the build, so it takes the commit type of the packages",
+      "matchFileNames": ["**/platformio.ini"],
+      "semanticCommitType": "build"
     }
   ],
   "customManagers": [
@@ -55,6 +66,13 @@
       "matchStrings": [
         "# renovate: datasource=(?<datasource>\\S+) depName=(?<depName>\\S+)\\n\\s*(?:[a-z0-9-]*version|[A-Z][A-Z0-9_]*_VERSION): [\"']?(?<currentValue>[^\"'\\s]+)[\"']?"
       ]
+    },
+    {
+      "description": "The PlatformIO platform that the renovate comment above it names in platformio.ini, where the tag of a release starts with v",
+      "customType": "regex",
+      "managerFilePatterns": ["/(^|/)platformio\\.ini$/"],
+      "matchStrings": ["; renovate: datasource=(?<datasource>\\S+) depName=(?<depName>\\S+)\\n\\s*platform = espressif32@(?<currentValue>\\S+)"],
+      "extractVersionTemplate": "^v(?<version>.*)$"
     }
   ]
 }

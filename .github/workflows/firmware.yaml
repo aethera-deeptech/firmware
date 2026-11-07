@@ -1,0 +1,90 @@
+name: Firmware
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: firmware-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions: {}
+
+jobs:
+  hub-build:
+    name: Hub build
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.12"
+
+      # The build downloads the platform and the Arduino core of the version that platformio.ini pins
+      - name: Build the hub firmware
+        env:
+          # renovate: datasource=pypi depName=platformio
+          PLATFORMIO_VERSION: 6.1.19
+        run: |
+          pip install "platformio==${PLATFORMIO_VERSION}"
+          pio run --project-dir gateway --environment hub
+
+  native-tests:
+    name: Native tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.12"
+
+      - name: Install the tools
+        env:
+          # renovate: datasource=pypi depName=platformio
+          PLATFORMIO_VERSION: 6.1.19
+          # renovate: datasource=pypi depName=gcovr
+          GCOVR_VERSION: "8.8"
+        run: pip install "platformio==${PLATFORMIO_VERSION}" "gcovr==${GCOVR_VERSION}"
+
+      - name: Run the host side tests
+        run: pio test --project-dir gateway --environment native
+
+      # PlatformIO has no step for coverage, so gcovr reads the data that the native build wrote, and only the code of the libraries counts.
+      # gcov looks for the sources relative to the project folder, so gcovr runs in gateway and writes the report to the root.
+      - name: Make the coverage report
+        working-directory: gateway
+        run: |
+          gcovr --root . --object-directory .pio/build/native --filter 'lib/' \
+            --xml ../coverage.xml --print-summary
+
+      # A failed upload fails the step only on main, so an outage of Codecov does not block a pull request. A run without the token, such as
+      # a pull request from a fork, fails the upload the same way.
+      - name: Upload coverage to Codecov
+        if: ${{ !cancelled() && hashFiles('coverage.xml') != '' }}
+        continue-on-error: ${{ github.ref != 'refs/heads/main' }}
+        uses: codecov/codecov-action@303a32d7a59b442fa8d48b6a1cc6825c09c847a5 # v7.1.1
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          files: coverage.xml
+          # the action also searches the workspace and would add the gcov files of the test code and of Unity to the report
+          disable_search: true
+          fail_ci_if_error: true

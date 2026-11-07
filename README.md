@@ -26,11 +26,11 @@ Firmware for the devices of WATTLINK, an energy audit dashboard for small busine
 
 ## Quick start
 
-The repository has no device code yet. A device folder is added when its firmware is ready to build, and this section then says how to build and flash it.
+The Hub is the only device with code so far, in `gateway/`. It is a PlatformIO project for the ESP32 DevKit V1 with the Arduino framework, on the espressif32 platform 6.13.0, which ships Arduino-ESP32 2.0.17. CI builds it and runs the host side tests on every pull request, so a board is only needed to see a change work on hardware. To build it yourself, install PlatformIO and run `pio run --project-dir gateway --environment hub`. The tests run with `pio test --project-dir gateway --environment native`. The Plug and the Clamp get their folders when their firmware is ready.
 
 ## Configuration
 
-No setting exists yet. The settings of each device are listed here when its folder is added.
+The Hub has no setting that its owner can change yet. The pins and the version are constants in `gateway/src/config.h`. The Hub gets the Wi-Fi settings of the building through a captive portal that is not built yet, so no password is stored in the repository.
 
 ## Documentation
 
@@ -42,6 +42,7 @@ No setting exists yet. The settings of each device are listed here when its fold
 
 ## Project layout
 
+- `gateway/` holds the firmware of the Hub. The code that does not touch the hardware sits in `gateway/lib/` and is tested on the host.
 - `.github/` holds the workflows, the issue forms and the pull request template.
 - `docs/` holds the project documentation.
 

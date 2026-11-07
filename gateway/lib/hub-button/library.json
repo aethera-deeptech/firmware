@@ -1,0 +1,7 @@
+{
+  "name": "hub-button",
+  "version": "0.1.0",
+  "description": "Tells a short press of the hub button from a long hold",
+  "frameworks": "*",
+  "platforms": "*"
+}
