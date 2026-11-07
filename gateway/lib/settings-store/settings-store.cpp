@@ -9,6 +9,14 @@ namespace {
 
 const char kBase64Url[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
 
+// A plain memset on a buffer that is not read again can be removed by the optimizer, a write through a volatile pointer cannot.
+void wipe(void *data, size_t length) {
+  volatile uint8_t *bytes = static_cast<volatile uint8_t *>(data);
+  while (length-- > 0) {
+    *bytes++ = 0;
+  }
+}
+
 bool isBase64UrlChar(char c) {
   return (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '-' || c == '_';
 }
@@ -63,55 +71,49 @@ bool SettingsStore::saveWifi(const char *ssid, const char *password) {
   if (checkWifiForm(ssid, password) != FormResult::Ok) {
     return false;
   }
-  if (!store_.put(key::kWifiSsid, ssid)) {
-    return false;
-  }
-  const bool hasPassword = password != nullptr && password[0] != '\0';
-  const bool passwordDone = hasPassword ? store_.put(key::kWifiPassword, password) : store_.remove(key::kWifiPassword);
-  if (!passwordDone) {
-    store_.remove(key::kWifiSsid);
-    return false;
-  }
-  return true;
+  char value[kWifiValueSize];
+  snprintf(value, sizeof(value), "%s\n%s", ssid, password != nullptr ? password : "");
+  const bool stored = store_.put(key::kWifi, value);
+  wipe(value, sizeof(value));
+  return stored;
 }
 
 bool SettingsStore::loadWifi(WifiSettings *out) {
-  WifiSettings found;
-  memset(&found, 0, sizeof(found));
-  if (!store_.get(key::kWifiSsid, found.ssid, sizeof(found.ssid))) {
+  char value[kWifiValueSize] = {0};
+  if (!store_.get(key::kWifi, value, sizeof(value))) {
+    wipe(value, sizeof(value));
     return false;
   }
-  // A password that is missing or cannot be read counts as none, so the hub tries the network as an open one and the join fails.
-  char password[sizeof(found.password)] = {0};
-  const bool hasPassword = store_.get(key::kWifiPassword, password, sizeof(password));
-  if (hasPassword) {
-    memcpy(found.password, password, sizeof(found.password));
-  }
-  memset(password, 0, sizeof(password));
-  if (checkWifiForm(found.ssid, found.password) != FormResult::Ok) {
-    memset(&found, 0, sizeof(found));
+  // The name is everything before the first line feed. A value with no line feed is damaged.
+  char *separator = strchr(value, '\n');
+  if (separator == nullptr) {
+    wipe(value, sizeof(value));
     return false;
   }
-  *out = found;
-  memset(&found, 0, sizeof(found));
-  return true;
+  *separator = '\0';
+  const FormResult result = checkWifiForm(value, separator + 1);
+  if (result == FormResult::Ok) {
+    memset(out, 0, sizeof(*out));
+    strncpy(out->ssid, value, sizeof(out->ssid) - 1);
+    strncpy(out->password, separator + 1, sizeof(out->password) - 1);
+  }
+  wipe(value, sizeof(value));
+  return result == FormResult::Ok;
 }
 
 bool SettingsStore::clearWifi() {
-  const bool ssidGone = store_.remove(key::kWifiSsid);
-  const bool passwordGone = store_.remove(key::kWifiPassword);
-  return ssidGone && passwordGone;
+  return store_.remove(key::kWifi);
 }
 
 bool SettingsStore::loadApiKey(char out[kApiKeySize]) {
   char found[kApiKeySize] = {0};
   if (!store_.get(key::kApiKey, found, sizeof(found)) || !validApiKey(found)) {
     out[0] = '\0';
-    memset(found, 0, sizeof(found));
+    wipe(found, sizeof(found));
     return false;
   }
   memcpy(out, found, sizeof(found));
-  memset(found, 0, sizeof(found));
+  wipe(found, sizeof(found));
   return true;
 }
 
@@ -140,14 +142,14 @@ bool SettingsStore::ensureApiKey(RandomU32 random, void *context, char out[kApiK
   // Eight equal numbers in a row mean that the source is stuck, and a key made from them would be easy to guess.
   char newKey[kApiKeySize] = {0};
   const bool encoded = !allSame && base64UrlEncode(bytes, sizeof(bytes), newKey, sizeof(newKey)) == kGeneratedApiKeyLength;
-  memset(bytes, 0, sizeof(bytes));
+  wipe(bytes, sizeof(bytes));
   if (!encoded || !store_.put(key::kApiKey, newKey)) {
-    memset(newKey, 0, sizeof(newKey));
+    wipe(newKey, sizeof(newKey));
     out[0] = '\0';
     return false;
   }
   memcpy(out, newKey, sizeof(newKey));
-  memset(newKey, 0, sizeof(newKey));
+  wipe(newKey, sizeof(newKey));
   *created = true;
   return true;
 }
@@ -172,8 +174,8 @@ size_t SettingsStore::describe(char *out, size_t size) {
   } else {
     written = snprintf(out, size, "wifi=none api_key=%s", hasKey ? "set" : "none");
   }
-  memset(&wifi, 0, sizeof(wifi));
-  memset(apiKey, 0, sizeof(apiKey));
+  wipe(&wifi, sizeof(wifi));
+  wipe(apiKey, sizeof(apiKey));
   if (written < 0) {
     out[0] = '\0';
     return 0;

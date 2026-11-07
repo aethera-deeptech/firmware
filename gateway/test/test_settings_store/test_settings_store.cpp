@@ -111,19 +111,18 @@ void test_wifi_settings_are_saved_and_loaded() {
   TEST_ASSERT_EQUAL_STRING("kopi-susu-2026", loaded.password);
 }
 
-void test_an_open_network_stores_no_password_and_removes_an_old_one() {
+void test_an_open_network_replaces_an_old_password_with_none() {
   FakeStore store;
   SettingsStore settings(store);
   TEST_ASSERT_TRUE(settings.saveWifi("WifiTamu", "oldpassword1"));
   TEST_ASSERT_TRUE(settings.saveWifi("WifiTamu", ""));
-  TEST_ASSERT_EQUAL_UINT(0, store.data.count(key::kWifiPassword));
+  TEST_ASSERT_EQUAL_STRING("WifiTamu\n", store.data[key::kWifi].c_str());
   WifiSettings loaded;
   TEST_ASSERT_TRUE(settings.loadWifi(&loaded));
   TEST_ASSERT_EQUAL_STRING("WifiTamu", loaded.ssid);
   TEST_ASSERT_EQUAL_STRING("", loaded.password);
   TEST_ASSERT_TRUE(settings.saveWifi("WifiTamu", nullptr));
 }
-
 void test_a_bad_form_is_refused_and_writes_nothing() {
   FakeStore store;
   SettingsStore settings(store);
@@ -134,24 +133,24 @@ void test_a_bad_form_is_refused_and_writes_nothing() {
   TEST_ASSERT_TRUE(store.data.empty());
 }
 
-void test_a_failed_password_write_removes_the_name_again() {
+void test_a_failed_write_keeps_the_older_setting() {
   FakeStore store;
   SettingsStore settings(store);
-  store.failPutOn = key::kWifiPassword;
-  TEST_ASSERT_FALSE(settings.saveWifi("Warung", "password123"));
-  TEST_ASSERT_EQUAL_UINT(0, store.data.count(key::kWifiSsid));
+  TEST_ASSERT_TRUE(settings.saveWifi("OldNet", "oldpassword1"));
+  store.failPutOn = key::kWifi;
+  TEST_ASSERT_FALSE(settings.saveWifi("NewNet", "newpassword1"));
   WifiSettings loaded;
-  TEST_ASSERT_FALSE(settings.loadWifi(&loaded));
+  TEST_ASSERT_TRUE(settings.loadWifi(&loaded));
+  TEST_ASSERT_EQUAL_STRING("OldNet", loaded.ssid);
+  TEST_ASSERT_EQUAL_STRING("oldpassword1", loaded.password);
 }
-
-void test_a_failed_name_write_stores_nothing() {
+void test_a_failed_first_write_stores_nothing() {
   FakeStore store;
   SettingsStore settings(store);
-  store.failPutOn = key::kWifiSsid;
+  store.failPutOn = key::kWifi;
   TEST_ASSERT_FALSE(settings.saveWifi("Warung", "password123"));
   TEST_ASSERT_TRUE(store.data.empty());
 }
-
 void test_nothing_is_loaded_when_no_name_is_stored() {
   FakeStore store;
   SettingsStore settings(store);
@@ -165,27 +164,32 @@ void test_a_damaged_flash_is_refused() {
   FakeStore store;
   SettingsStore settings(store);
   WifiSettings loaded;
-  store.data[key::kWifiSsid] = std::string(40, 'a');
+  store.data[key::kWifi] = "Warung";
   TEST_ASSERT_FALSE(settings.loadWifi(&loaded));
-  store.data[key::kWifiSsid] = "Warung";
-  store.data[key::kWifiPassword] = "short";
+  store.data[key::kWifi] = std::string(40, 'a') + "\npassword123";
   TEST_ASSERT_FALSE(settings.loadWifi(&loaded));
-  store.data[key::kWifiPassword] = "pass\nword12";
+  store.data[key::kWifi] = "\npassword123";
   TEST_ASSERT_FALSE(settings.loadWifi(&loaded));
+  store.data[key::kWifi] = "Warung\nshort";
+  TEST_ASSERT_FALSE(settings.loadWifi(&loaded));
+  store.data[key::kWifi] = "Warung\npass\nword12";
+  TEST_ASSERT_FALSE(settings.loadWifi(&loaded));
+  store.data[key::kWifi] = std::string(32, 'a') + "\n" + std::string(63, 'p');
+  TEST_ASSERT_TRUE(settings.loadWifi(&loaded));
+  TEST_ASSERT_EQUAL_UINT(32, strlen(loaded.ssid));
+  TEST_ASSERT_EQUAL_UINT(63, strlen(loaded.password));
 }
-
-void test_clearing_removes_both_and_reports_a_failure() {
+void test_clearing_removes_the_setting_and_reports_a_failure() {
   FakeStore store;
   SettingsStore settings(store);
   settings.saveWifi("Warung", "password123");
   TEST_ASSERT_TRUE(settings.clearWifi());
   TEST_ASSERT_TRUE(store.data.empty());
   settings.saveWifi("Warung", "password123");
-  store.failRemoveOn = key::kWifiPassword;
+  store.failRemoveOn = key::kWifi;
   TEST_ASSERT_FALSE(settings.clearWifi());
-  TEST_ASSERT_EQUAL_UINT(0, store.data.count(key::kWifiSsid));
+  TEST_ASSERT_EQUAL_UINT(1, store.data.count(key::kWifi));
 }
-
 void test_the_key_is_made_from_32_random_bytes_and_stored() {
   FakeStore store;
   SettingsStore settings(store);
@@ -316,13 +320,32 @@ void test_the_log_line_is_cut_to_a_small_buffer() {
   char small[12];
   const size_t length = settings.describe(small, sizeof(small));
   TEST_ASSERT_EQUAL_UINT(11, length);
-  TEST_ASSERT_EQUAL_UINT(11, strlen(small));
+  TEST_ASSERT_EQUAL_STRING("wifi=Warung", small);
   TEST_ASSERT_EQUAL_UINT(0, settings.describe(small, 0));
 }
 
+void test_one_different_word_among_equal_ones_is_enough() {
+  FakeStore store;
+  SettingsStore settings(store);
+  const uint32_t words[8] = {7, 7, 7, 7, 7, 7, 7, 8};
+  Script script = {words, 8, 0};
+  char apiKey[kApiKeySize];
+  bool created = false;
+  TEST_ASSERT_TRUE(settings.ensureApiKey(scripted, &script, apiKey, &created));
+  TEST_ASSERT_TRUE(created);
+}
+
+void test_a_damaged_name_shows_as_none_in_the_log_line() {
+  FakeStore store;
+  SettingsStore settings(store);
+  store.data[key::kWifi] = "no-separator";
+  char line[128];
+  settings.describe(line, sizeof(line));
+  TEST_ASSERT_EQUAL_STRING("wifi=none api_key=none", line);
+}
+
 void test_the_keys_fit_the_limit_of_the_flash() {
-  TEST_ASSERT_TRUE(strlen(key::kWifiSsid) <= 15);
-  TEST_ASSERT_TRUE(strlen(key::kWifiPassword) <= 15);
+  TEST_ASSERT_TRUE(strlen(key::kWifi) <= 15);
   TEST_ASSERT_TRUE(strlen(key::kApiKey) <= 15);
 }
 
@@ -332,13 +355,13 @@ int main(int, char **) {
   RUN_TEST(test_base64url_uses_the_url_alphabet_and_no_padding);
   RUN_TEST(test_base64url_refuses_a_small_buffer);
   RUN_TEST(test_wifi_settings_are_saved_and_loaded);
-  RUN_TEST(test_an_open_network_stores_no_password_and_removes_an_old_one);
+  RUN_TEST(test_an_open_network_replaces_an_old_password_with_none);
   RUN_TEST(test_a_bad_form_is_refused_and_writes_nothing);
-  RUN_TEST(test_a_failed_password_write_removes_the_name_again);
-  RUN_TEST(test_a_failed_name_write_stores_nothing);
+  RUN_TEST(test_a_failed_write_keeps_the_older_setting);
+  RUN_TEST(test_a_failed_first_write_stores_nothing);
   RUN_TEST(test_nothing_is_loaded_when_no_name_is_stored);
   RUN_TEST(test_a_damaged_flash_is_refused);
-  RUN_TEST(test_clearing_removes_both_and_reports_a_failure);
+  RUN_TEST(test_clearing_removes_the_setting_and_reports_a_failure);
   RUN_TEST(test_the_key_is_made_from_32_random_bytes_and_stored);
   RUN_TEST(test_the_key_is_made_only_once);
   RUN_TEST(test_a_stuck_random_source_makes_no_key);
@@ -348,6 +371,8 @@ int main(int, char **) {
   RUN_TEST(test_the_key_can_be_cleared);
   RUN_TEST(test_the_log_line_says_what_is_stored_and_shows_no_secret);
   RUN_TEST(test_the_log_line_is_cut_to_a_small_buffer);
+  RUN_TEST(test_one_different_word_among_equal_ones_is_enough);
+  RUN_TEST(test_a_damaged_name_shows_as_none_in_the_log_line);
   RUN_TEST(test_the_keys_fit_the_limit_of_the_flash);
   return UNITY_END();
 }
