@@ -18,10 +18,12 @@ SessionState SetupSession::update(uint32_t nowMs) {
   return state_;
 }
 
-void SetupSession::finish() {
-  if (state_ == SessionState::Running) {
-    state_ = SessionState::Done;
+bool SetupSession::finish(uint32_t nowMs) {
+  if (!isOpen(nowMs)) {
+    return false;
   }
+  state_ = SessionState::Done;
+  return true;
 }
 
 void SetupSession::cancel() {

@@ -30,8 +30,9 @@ class SetupSession {
   // Moves a running session to Expired when its time is over. Returns the state.
   SessionState update(uint32_t nowMs);
 
-  // The owner saved the settings. Only a running session can finish. Done and Expired stay as they are until start() is called.
-  void finish();
+  // The owner saved the settings. Only a session that is still open can finish, so a save that arrives after the limit is refused even
+  // when update() has not run yet. Returns true when the session is now Done. Done and Expired stay as they are until start() is called.
+  bool finish(uint32_t nowMs);
 
   // Ends the session without a result, for example when the portal is left by a restart.
   void cancel();

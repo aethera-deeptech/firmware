@@ -31,7 +31,7 @@ void test_an_expired_session_stays_expired_until_it_starts_again() {
   session.start(0);
   session.update(kSetupSessionMs);
   TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(SessionState::Expired), static_cast<uint8_t>(session.update(kSetupSessionMs + 5)));
-  session.finish();
+  TEST_ASSERT_FALSE(session.finish(kSetupSessionMs + 6));
   TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(SessionState::Expired), static_cast<uint8_t>(session.state()));
   session.start(kSetupSessionMs + 10);
   TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(SessionState::Running), static_cast<uint8_t>(session.state()));
@@ -40,7 +40,7 @@ void test_an_expired_session_stays_expired_until_it_starts_again() {
 void test_saving_the_settings_finishes_a_running_session() {
   SetupSession session;
   session.start(0);
-  session.finish();
+  TEST_ASSERT_TRUE(session.finish(1000));
   TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(SessionState::Done), static_cast<uint8_t>(session.state()));
   TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(SessionState::Done), static_cast<uint8_t>(session.update(kSetupSessionMs * 2)));
   TEST_ASSERT_EQUAL_UINT32(0, session.secondsLeft(10));
@@ -48,7 +48,7 @@ void test_saving_the_settings_finishes_a_running_session() {
 
 void test_finish_does_nothing_when_no_session_runs() {
   SetupSession session;
-  session.finish();
+  TEST_ASSERT_FALSE(session.finish(0));
   TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(SessionState::Idle), static_cast<uint8_t>(session.state()));
 }
 
@@ -72,7 +72,7 @@ void test_starting_a_running_session_does_not_extend_it() {
 void test_a_session_can_start_again_after_it_ended_for_any_reason() {
   SetupSession session;
   TEST_ASSERT_TRUE(session.start(0));
-  session.finish();
+  TEST_ASSERT_TRUE(session.finish(10));
   TEST_ASSERT_TRUE(session.start(1000));
   TEST_ASSERT_EQUAL_UINT32(300, session.secondsLeft(1000));
   session.cancel();
@@ -91,11 +91,25 @@ void test_the_session_is_not_open_after_the_limit_even_when_nobody_called_update
   TEST_ASSERT_EQUAL_UINT32(0, session.secondsLeft(kSetupSessionMs + 1));
 }
 
+void test_a_save_after_the_limit_is_refused_even_when_nobody_called_update() {
+  SetupSession session;
+  session.start(0);
+  TEST_ASSERT_FALSE(session.finish(kSetupSessionMs));
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(SessionState::Running), static_cast<uint8_t>(session.state()));
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(SessionState::Expired), static_cast<uint8_t>(session.update(kSetupSessionMs)));
+}
+
+void test_a_save_in_the_last_millisecond_is_accepted() {
+  SetupSession session;
+  session.start(0);
+  TEST_ASSERT_TRUE(session.finish(kSetupSessionMs - 1));
+}
+
 void test_the_session_is_not_open_when_idle_done_or_expired() {
   SetupSession session;
   TEST_ASSERT_FALSE(session.isOpen(0));
   session.start(0);
-  session.finish();
+  session.finish(5);
   TEST_ASSERT_FALSE(session.isOpen(10));
   session.start(100);
   session.update(100 + kSetupSessionMs);
@@ -109,8 +123,8 @@ void test_update_after_cancel_and_finish_after_done_change_nothing() {
   session.cancel();
   TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(SessionState::Idle), static_cast<uint8_t>(session.update(kSetupSessionMs * 2)));
   session.start(5);
-  session.finish();
-  session.finish();
+  TEST_ASSERT_TRUE(session.finish(6));
+  TEST_ASSERT_FALSE(session.finish(7));
   TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(SessionState::Done), static_cast<uint8_t>(session.state()));
 }
 
@@ -163,6 +177,8 @@ int main(int, char **) {
   RUN_TEST(test_starting_a_running_session_does_not_extend_it);
   RUN_TEST(test_a_session_can_start_again_after_it_ended_for_any_reason);
   RUN_TEST(test_the_session_is_not_open_after_the_limit_even_when_nobody_called_update);
+  RUN_TEST(test_a_save_after_the_limit_is_refused_even_when_nobody_called_update);
+  RUN_TEST(test_a_save_in_the_last_millisecond_is_accepted);
   RUN_TEST(test_the_session_is_not_open_when_idle_done_or_expired);
   RUN_TEST(test_update_after_cancel_and_finish_after_done_change_nothing);
   RUN_TEST(test_a_session_that_starts_at_the_last_value_of_the_counter_runs_five_minutes);
