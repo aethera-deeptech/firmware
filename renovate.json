@@ -73,12 +73,6 @@
       "managerFilePatterns": ["/(^|/)platformio\\.ini$/"],
       "matchStrings": ["; renovate: datasource=(?<datasource>\\S+) depName=(?<depName>\\S+)\\n\\s*platform = espressif32@(?<currentValue>\\S+)"],
       "extractVersionTemplate": "^v(?<version>.*)$"
-    },
-    {
-      "description": "A library of platformio.ini that is pinned to the tag of a GitHub repository, where the renovate comment above it names the repository",
-      "customType": "regex",
-      "managerFilePatterns": ["/(^|/)platformio\\.ini$/"],
-      "matchStrings": ["; renovate: datasource=(?<datasource>\\S+) depName=(?<depName>\\S+)\\n\\s*lib_deps = https://github\\.com/\\S+\\.git#(?<currentValue>\\S+)"]
     }
   ]
 }
