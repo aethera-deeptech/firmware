@@ -55,3 +55,4 @@ ignore:
   - .github/ISSUE_TEMPLATE
   # PlatformIO names a test suite folder test_ followed by the suite, with underscores
   - gateway/test
+  - common/test
