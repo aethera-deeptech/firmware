@@ -21,6 +21,7 @@ constexpr const char *kPortalTitle = "MODE SETUP";
 constexpr const char *kPortalWifiFormat = "Wi-Fi: %s";
 constexpr const char *kPortalCodeFormat = "Kode: %s";
 constexpr const char *kPortalOpen = "Buka 192.168.4.1";
+constexpr const char *kPortalTypeHint = "Ketik tanpa tanda -";
 
 constexpr const char *kPairingTitleFormat = "PAIRING %u dtk";
 constexpr const char *kPairingHintFirst = "Tahan tombol node";
@@ -43,6 +44,7 @@ static_assert(constLength(text::kBootTitle) <= kLineWidth, "line too long");
 static_assert(constLength(text::kBootStarting) <= kLineWidth, "line too long");
 static_assert(constLength(text::kPortalTitle) <= kLineWidth, "line too long");
 static_assert(constLength(text::kPortalOpen) <= kLineWidth, "line too long");
+static_assert(constLength(text::kPortalTypeHint) <= kLineWidth, "line too long");
 static_assert(constLength(text::kPairingHintFirst) <= kLineWidth, "line too long");
 static_assert(constLength(text::kPairingHintSecond) <= kLineWidth, "line too long");
 static_assert(constLength(text::kClaimTitle) <= kLineWidth, "line too long");
