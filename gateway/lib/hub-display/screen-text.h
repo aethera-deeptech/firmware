@@ -24,4 +24,7 @@ Screen pairingScreen(unsigned secondsLeft);
 Screen claimScreen(const char *claimCode);
 Screen statusScreen(bool wifiUp, bool serverUp, unsigned nodes, uint32_t watts);
 
+// Shown when no Wi-Fi is saved yet. It tells the owner how to start the setup.
+Screen needSetupScreen();
+
 }  // namespace wattlink
