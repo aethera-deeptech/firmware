@@ -1,6 +1,7 @@
 #include <Arduino.h>
 
 #include "config.h"
+#include "crypto-selftest.h"
 #include "hub-button.h"
 #include "nvs-store.h"
 #include "oled.h"
@@ -13,6 +14,9 @@ static wattlink::Oled oled;
 static wattlink::NvsKeyValueStore flash;
 static wattlink::SettingsStore settings(flash);
 static wattlink::Portal portal(settings, oled);
+// The result of the crypto self test stays here, so the pairing code can refuse to start when the chip disagrees with the host tests.
+// Until the test has run, the result counts as failed.
+static wattlink::SelfTestResult cryptoResult = wattlink::SelfTestResult::HkdfFailed;
 
 void setup() {
   Serial.begin(115200);
@@ -32,6 +36,9 @@ void setup() {
   char stored[96];
   settings.describe(stored, sizeof(stored));
   Serial.printf("Settings: %s\n", stored);
+  // The known answers of the host tests, run through the mbedTLS of the chip.
+  cryptoResult = wattlink::runCryptoSelfTest();
+  Serial.printf("Crypto self test: %s\n", wattlink::selfTestName(cryptoResult));
 }
 
 void loop() {
