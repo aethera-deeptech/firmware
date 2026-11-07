@@ -53,3 +53,5 @@ ignore:
   - dist
   # GitHub names the issue forms by what the person sees
   - .github/ISSUE_TEMPLATE
+  # PlatformIO names a test suite folder test_ followed by the suite, with underscores
+  - gateway/test

@@ -45,6 +45,17 @@
       "matchManagers": ["custom.regex"],
       "semanticCommitType": "ci",
       "addLabels": ["github_actions"]
+    },
+    {
+      "description": "a major version of the espressif32 platform switches to the Arduino-ESP32 3.x core, which changes the ESP-NOW API, so it is held until the firmware is ported",
+      "matchDepNames": ["platformio/platform-espressif32"],
+      "matchUpdateTypes": ["major"],
+      "enabled": false
+    },
+    {
+      "description": "the platform and the Python tools of the firmware build take the commit type of the packages",
+      "matchDepNames": ["platformio/platform-espressif32", "platformio", "gcovr"],
+      "semanticCommitType": "build"
     }
   ],
   "customManagers": [
@@ -55,6 +66,13 @@
       "matchStrings": [
         "# renovate: datasource=(?<datasource>\\S+) depName=(?<depName>\\S+)\\n\\s*(?:[a-z0-9-]*version|[A-Z][A-Z0-9_]*_VERSION): [\"']?(?<currentValue>[^\"'\\s]+)[\"']?"
       ]
+    },
+    {
+      "description": "The PlatformIO platform that the renovate comment above it names in platformio.ini, where the tag of a release starts with v",
+      "customType": "regex",
+      "managerFilePatterns": ["/(^|/)platformio\\.ini$/"],
+      "matchStrings": ["; renovate: datasource=(?<datasource>\\S+) depName=(?<depName>\\S+)\\n\\s*platform = espressif32@(?<currentValue>\\S+)"],
+      "extractVersionTemplate": "^v(?<version>.*)$"
     }
   ]
 }
