@@ -3,6 +3,7 @@
 #include "config.h"
 #include "hub-button.h"
 #include "nvs-store.h"
+#include "oled.h"
 #include "portal-page.h"
 #include "screen-text.h"
 #include "settings-store.h"
@@ -11,6 +12,7 @@
 #include "wifi-form.h"
 
 static wattlink::ButtonClassifier button;
+static wattlink::Oled oled;
 static wattlink::NvsKeyValueStore flash;
 static wattlink::SettingsStore settings(flash);
 
@@ -18,10 +20,15 @@ void setup() {
   Serial.begin(115200);
   pinMode(config::kHubButtonPin, INPUT_PULLUP);
   Serial.printf("WATTLINK hub %s\n", config::kFirmwareVersion);
-  // The OLED driver comes later. Until then the boot screen goes to the serial port, which also makes CI build the display code for the chip.
   const wattlink::Screen boot = wattlink::bootScreen(config::kFirmwareVersion);
-  for (uint8_t i = 0; i < boot.count; i++) {
-    Serial.println(boot.line[i]);
+  if (oled.begin()) {
+    oled.show(boot);
+  } else {
+    // The library did not start. The boot screen has nothing secret, so it goes to the serial port instead.
+    Serial.println("OLED: start failed");
+    for (uint8_t i = 0; i < boot.count; i++) {
+      Serial.println(boot.line[i]);
+    }
   }
   // The line says what is stored and never shows the password or the key.
   char stored[96];
