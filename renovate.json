@@ -43,18 +43,18 @@
     {
       "description": "the tools that CI starts from a workflow, such as ls-lint and Renovate itself, take the commit type of the workflows",
       "matchManagers": ["custom.regex"],
+      "matchFileNames": [".github/workflows/**"],
       "semanticCommitType": "ci",
       "addLabels": ["github_actions"]
     },
     {
-      "description": "a major version of the espressif32 platform switches to the Arduino-ESP32 3.x core, which changes the ESP-NOW API, so it is held until the firmware is ported",
+      "description": "version 8 of the espressif32 platform ships the Arduino-ESP32 3.x core, which changes the ESP-NOW API, so it is not offered until the firmware is ported",
       "matchDepNames": ["platformio/platform-espressif32"],
-      "matchUpdateTypes": ["major"],
-      "enabled": false
+      "allowedVersions": "<8"
     },
     {
-      "description": "the platform and the Python tools of the firmware build take the commit type of the packages",
-      "matchDepNames": ["platformio/platform-espressif32", "platformio", "gcovr"],
+      "description": "the platform of the firmware is part of the build, so it takes the commit type of the packages",
+      "matchFileNames": ["**/platformio.ini"],
       "semanticCommitType": "build"
     }
   ],
