@@ -1,0 +1,7 @@
+{
+  "name": "wifi-form",
+  "version": "0.1.0",
+  "description": "The checks of the Wi-Fi name and password that the owner types in the setup page",
+  "frameworks": "*",
+  "platforms": "*"
+}

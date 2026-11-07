@@ -3,6 +3,9 @@
 #include "config.h"
 #include "hub-button.h"
 #include "screen-text.h"
+// The portal code that uses these comes in the next changes. They are included now so that CI builds them for the 32 bit chip.
+#include "setup-session.h"
+#include "wifi-form.h"
 
 static wattlink::ButtonClassifier button;
 

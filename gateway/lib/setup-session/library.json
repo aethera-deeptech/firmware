@@ -1,0 +1,7 @@
+{
+  "name": "setup-session",
+  "version": "0.1.0",
+  "description": "The timer and the client limit of the setup network of the hub",
+  "frameworks": "*",
+  "platforms": "*"
+}
