@@ -24,8 +24,8 @@ void setup() {
   if (oled.begin()) {
     oled.show(boot);
   } else {
-    // The library did not start. The boot screen has nothing secret, so it goes to the serial port instead.
-    Serial.println("OLED: start failed");
+    // No display answered. The boot screen has nothing secret, so it goes to the serial port instead.
+    Serial.println("OLED: no answer at the address");
     for (uint8_t i = 0; i < boot.count; i++) {
       Serial.println(boot.line[i]);
     }

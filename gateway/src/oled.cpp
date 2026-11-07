@@ -1,6 +1,7 @@
 #include "oled.h"
 
 #include <U8g2lib.h>
+#include <Wire.h>
 
 #include "config.h"
 
@@ -21,6 +22,11 @@ bool Oled::begin() {
   // U8g2 takes the I2C address multiplied by 2, and the call must come before begin().
   display.setI2CAddress(config::kOledAddress << 1);
   if (!display.begin()) {
+    return false;
+  }
+  // U8g2 has started the I2C bus on the pins above. It ignores the acknowledgement, so the display is probed here with an empty message.
+  Wire.beginTransmission(config::kOledAddress);
+  if (Wire.endTransmission() != 0) {
     return false;
   }
   display.setFont(u8g2_font_6x10_tf);
