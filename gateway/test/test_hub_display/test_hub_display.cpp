@@ -24,7 +24,7 @@ uint32_t scripted(void *context) {
 
 void assertLinesFit(const Screen &screen) {
   for (uint8_t i = 0; i < screen.count; i++) {
-    TEST_ASSERT_TRUE(strlen(screen.line[i]) <= kLineWidth);
+    TEST_ASSERT_LESS_OR_EQUAL_UINT(kLineWidth, strlen(screen.line[i]));
   }
 }
 
@@ -37,7 +37,7 @@ void test_the_setup_code_has_eight_digits_and_a_terminating_zero() {
   const uint32_t values[] = {1234567, 7654321, 42, 99, 5, 0, 10, 19};
   Script script = {values, 8, 0};
   char code[kSetupCodeDigits + 1];
-  makeSetupCode(scripted, &script, code);
+  TEST_ASSERT_TRUE(makeSetupCode(scripted, &script, code));
   TEST_ASSERT_EQUAL_UINT(kSetupCodeDigits, strlen(code));
   for (size_t i = 0; i < kSetupCodeDigits; i++) {
     TEST_ASSERT_TRUE(code[i] >= '0' && code[i] <= '9');
@@ -48,7 +48,7 @@ void test_each_digit_is_the_last_digit_of_one_number() {
   const uint32_t values[] = {1234567, 7654321, 42, 99, 5, 0, 10, 19};
   Script script = {values, 8, 0};
   char code[kSetupCodeDigits + 1];
-  makeSetupCode(scripted, &script, code);
+  TEST_ASSERT_TRUE(makeSetupCode(scripted, &script, code));
   TEST_ASSERT_EQUAL_STRING("71295009", code);
   TEST_ASSERT_EQUAL_UINT(8, script.next);
 }
@@ -58,7 +58,7 @@ void test_a_number_at_the_limit_is_drawn_again() {
   const uint32_t values[] = {4294967290u, 4294967295u, 4294967291u, 1, 2, 3, 4, 5, 6, 7, 8};
   Script script = {values, 11, 0};
   char code[kSetupCodeDigits + 1];
-  makeSetupCode(scripted, &script, code);
+  TEST_ASSERT_TRUE(makeSetupCode(scripted, &script, code));
   TEST_ASSERT_EQUAL_STRING("12345678", code);
   TEST_ASSERT_EQUAL_UINT(11, script.next);
 }
@@ -67,7 +67,7 @@ void test_the_largest_accepted_number_gives_the_digit_9() {
   const uint32_t values[] = {4294967289u};
   Script script = {values, 1, 0};
   char code[kSetupCodeDigits + 1];
-  makeSetupCode(scripted, &script, code);
+  TEST_ASSERT_TRUE(makeSetupCode(scripted, &script, code));
   TEST_ASSERT_EQUAL_STRING("99999999", code);
   TEST_ASSERT_EQUAL_UINT(8, script.next);
 }
@@ -79,8 +79,8 @@ void test_different_random_numbers_give_a_different_code() {
   Script scriptB = {second, 8, 0};
   char a[kSetupCodeDigits + 1];
   char b[kSetupCodeDigits + 1];
-  makeSetupCode(scripted, &scriptA, a);
-  makeSetupCode(scripted, &scriptB, b);
+  TEST_ASSERT_TRUE(makeSetupCode(scripted, &scriptA, a));
+  TEST_ASSERT_TRUE(makeSetupCode(scripted, &scriptB, b));
   TEST_ASSERT_NOT_EQUAL(0, strcmp(a, b));
 }
 
@@ -172,6 +172,63 @@ void test_no_screen_has_more_lines_than_the_display_can_show() {
   TEST_ASSERT_TRUE(statusScreen(true, true, 1, 1).count <= kMaxScreenLines);
 }
 
+void test_two_calls_with_one_source_give_two_codes() {
+  const uint32_t values[] = {1, 2, 3, 4, 5, 6, 7, 8, 9, 0, 9, 8, 7, 6, 5, 4};
+  Script script = {values, 16, 0};
+  char first[kSetupCodeDigits + 1];
+  char second[kSetupCodeDigits + 1];
+  TEST_ASSERT_TRUE(makeSetupCode(scripted, &script, first));
+  TEST_ASSERT_TRUE(makeSetupCode(scripted, &script, second));
+  TEST_ASSERT_EQUAL_STRING("12345678", first);
+  TEST_ASSERT_EQUAL_STRING("90987654", second);
+}
+
+void test_a_stuck_source_fails_and_leaves_an_empty_code() {
+  const uint32_t values[] = {4294967295u};
+  Script script = {values, 1, 0};
+  char code[kSetupCodeDigits + 1];
+  memset(code, 'x', sizeof(code));
+  TEST_ASSERT_FALSE(makeSetupCode(scripted, &script, code));
+  TEST_ASSERT_EQUAL_UINT(0, strlen(code));
+  TEST_ASSERT_EQUAL_UINT(kMaxRejectedDraws, script.next);
+}
+
+void test_the_code_does_not_write_past_its_buffer() {
+  const uint32_t values[] = {1, 2, 3, 4, 5, 6, 7, 8};
+  Script script = {values, 8, 0};
+  char buffer[kSetupCodeDigits + 2];
+  buffer[kSetupCodeDigits + 1] = 0x5A;
+  TEST_ASSERT_TRUE(makeSetupCode(scripted, &script, buffer));
+  TEST_ASSERT_EQUAL_UINT8(0x5A, static_cast<uint8_t>(buffer[kSetupCodeDigits + 1]));
+}
+
+void test_the_first_four_bytes_of_the_mac_do_not_change_the_network_name() {
+  const uint8_t a[6] = {1, 2, 3, 4, 0xAB, 0xCD};
+  const uint8_t b[6] = {9, 8, 7, 6, 0xAB, 0xCD};
+  char nameA[kApNameSize];
+  char nameB[kApNameSize];
+  makeApName(a, nameA);
+  makeApName(b, nameB);
+  TEST_ASSERT_EQUAL_STRING("WATTLINK-ABCD", nameA);
+  TEST_ASSERT_EQUAL_STRING(nameA, nameB);
+}
+
+void test_the_pairing_countdown_is_capped_to_keep_the_line_width() {
+  const Screen screen = pairingScreen(4294967295u);
+  TEST_ASSERT_EQUAL_STRING("PAIRING 999 dtk", screen.line[0]);
+  assertLinesFit(screen);
+}
+
+void test_a_missing_text_shows_as_empty_and_a_long_version_is_cut() {
+  TEST_ASSERT_EQUAL_STRING("Kode: ", portalScreen(nullptr, nullptr).line[2]);
+  TEST_ASSERT_EQUAL_STRING("Wi-Fi: ", portalScreen(nullptr, nullptr).line[1]);
+  TEST_ASSERT_EQUAL_STRING("", claimScreen(nullptr).line[1]);
+  TEST_ASSERT_EQUAL_STRING("v", bootScreen(nullptr).line[1]);
+  const Screen longVersion = bootScreen("1.2.3-a-very-long-pre-release-name");
+  assertLinesFit(longVersion);
+  TEST_ASSERT_EQUAL_UINT(kLineWidth, strlen(longVersion.line[1]));
+}
+
 int main(int, char **) {
   UNITY_BEGIN();
   RUN_TEST(test_the_setup_code_has_eight_digits_and_a_terminating_zero);
@@ -179,6 +236,12 @@ int main(int, char **) {
   RUN_TEST(test_a_number_at_the_limit_is_drawn_again);
   RUN_TEST(test_the_largest_accepted_number_gives_the_digit_9);
   RUN_TEST(test_different_random_numbers_give_a_different_code);
+  RUN_TEST(test_two_calls_with_one_source_give_two_codes);
+  RUN_TEST(test_a_stuck_source_fails_and_leaves_an_empty_code);
+  RUN_TEST(test_the_code_does_not_write_past_its_buffer);
+  RUN_TEST(test_the_first_four_bytes_of_the_mac_do_not_change_the_network_name);
+  RUN_TEST(test_the_pairing_countdown_is_capped_to_keep_the_line_width);
+  RUN_TEST(test_a_missing_text_shows_as_empty_and_a_long_version_is_cut);
   RUN_TEST(test_the_network_name_uses_the_last_two_bytes_in_upper_case);
   RUN_TEST(test_the_network_name_keeps_leading_zeros);
   RUN_TEST(test_the_boot_screen);

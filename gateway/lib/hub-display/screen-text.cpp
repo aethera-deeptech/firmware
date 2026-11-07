@@ -1,5 +1,6 @@
 #include "screen-text.h"
 
+#include <stdarg.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -13,76 +14,65 @@ Screen emptyScreen() {
   return screen;
 }
 
-// snprintf cuts a line that is too long and always ends it with a zero, so a long value never writes past the line.
-void setLine(Screen *screen, const char *text) {
-  if (screen->count < kMaxScreenLines) {
-    snprintf(screen->line[screen->count], kLineWidth + 1, "%s", text);
-    screen->count++;
+// vsnprintf cuts a line that is too long and always ends it with a zero, so a long value never writes past the line.
+// The format attribute makes the compiler check the format against the arguments.
+__attribute__((format(printf, 2, 3))) void appendLine(Screen *screen, const char *format, ...) {
+  if (screen->count >= kMaxScreenLines) {
+    return;
   }
+  va_list args;
+  va_start(args, format);
+  vsnprintf(screen->line[screen->count], kLineWidth + 1, format, args);
+  va_end(args);
+  screen->count++;
 }
 
-void setLine(Screen *screen, const char *format, const char *value) {
-  if (screen->count < kMaxScreenLines) {
-    snprintf(screen->line[screen->count], kLineWidth + 1, format, value);
-    screen->count++;
-  }
-}
-
-void setLine(Screen *screen, const char *format, unsigned value) {
-  if (screen->count < kMaxScreenLines) {
-    snprintf(screen->line[screen->count], kLineWidth + 1, format, value);
-    screen->count++;
-  }
-}
-
-void setLine(Screen *screen, const char *format, unsigned long value) {
-  if (screen->count < kMaxScreenLines) {
-    snprintf(screen->line[screen->count], kLineWidth + 1, format, value);
-    screen->count++;
-  }
+// A null pointer given to %s is undefined, so a missing value shows as an empty text.
+const char *orEmpty(const char *value) {
+  return value != nullptr ? value : "";
 }
 
 }  // namespace
 
 Screen bootScreen(const char *version) {
   Screen screen = emptyScreen();
-  setLine(&screen, text::kBootTitle);
-  setLine(&screen, "v%s", version);
-  setLine(&screen, text::kBootStarting);
+  appendLine(&screen, "%s", text::kBootTitle);
+  appendLine(&screen, "v%s", orEmpty(version));
+  appendLine(&screen, "%s", text::kBootStarting);
   return screen;
 }
 
 Screen portalScreen(const char *apName, const char *setupCode) {
   Screen screen = emptyScreen();
-  setLine(&screen, text::kPortalTitle);
-  setLine(&screen, text::kPortalWifiFormat, apName);
-  setLine(&screen, text::kPortalCodeFormat, setupCode);
-  setLine(&screen, text::kPortalOpen);
+  appendLine(&screen, "%s", text::kPortalTitle);
+  appendLine(&screen, text::kPortalWifiFormat, orEmpty(apName));
+  appendLine(&screen, text::kPortalCodeFormat, orEmpty(setupCode));
+  appendLine(&screen, "%s", text::kPortalOpen);
   return screen;
 }
 
 Screen pairingScreen(unsigned secondsLeft) {
   Screen screen = emptyScreen();
-  setLine(&screen, text::kPairingTitleFormat, secondsLeft);
-  setLine(&screen, text::kPairingHintFirst);
-  setLine(&screen, text::kPairingHintSecond);
+  appendLine(&screen, text::kPairingTitleFormat, secondsLeft > kMaxPairingSeconds ? kMaxPairingSeconds : secondsLeft);
+  appendLine(&screen, "%s", text::kPairingHintFirst);
+  appendLine(&screen, "%s", text::kPairingHintSecond);
   return screen;
 }
 
 Screen claimScreen(const char *claimCode) {
   Screen screen = emptyScreen();
-  setLine(&screen, text::kClaimTitle);
-  setLine(&screen, "%s", claimCode);
-  setLine(&screen, text::kClaimHint);
+  appendLine(&screen, "%s", text::kClaimTitle);
+  appendLine(&screen, "%s", orEmpty(claimCode));
+  appendLine(&screen, "%s", text::kClaimHint);
   return screen;
 }
 
 Screen statusScreen(bool wifiUp, bool serverUp, unsigned nodes, uint32_t watts) {
   Screen screen = emptyScreen();
-  setLine(&screen, wifiUp ? text::kWifiConnected : text::kWifiDown);
-  setLine(&screen, serverUp ? text::kServerConnected : text::kServerDown);
-  setLine(&screen, text::kNodesFormat, nodes);
-  setLine(&screen, text::kPowerFormat, static_cast<unsigned long>(watts));
+  appendLine(&screen, "%s", wifiUp ? text::kWifiConnected : text::kWifiDown);
+  appendLine(&screen, "%s", serverUp ? text::kServerConnected : text::kServerDown);
+  appendLine(&screen, text::kNodesFormat, nodes);
+  appendLine(&screen, text::kPowerFormat, static_cast<unsigned long>(watts));
   return screen;
 }
 
