@@ -16,15 +16,22 @@ static wattlink::NvsKeyValueStore flash;
 static wattlink::SettingsStore settings(flash);
 static wattlink::Portal portal(settings, oled);
 static wattlink::WifiClient wifi(settings);
-static uint32_t lastScreenMs = 0;
+// What the home screen showed last, so that it is drawn again only when it changes. -1 means that it has to be drawn.
+static int lastHome = -1;
 // The result of the crypto self test stays here, so the pairing code can refuse to start when the chip disagrees with the host tests.
 // Until the test has run, the result counts as failed.
 static wattlink::SelfTestResult cryptoResult = wattlink::SelfTestResult::HkdfFailed;
 
 // The home screen. It says that the Wi-Fi is not set up yet, or whether the hub is joined. The server line stays "putus" until the client of
 // the backend exists, and the node count and the power stay 0 until the nodes are connected.
-static void drawHome() {
-  if (wifi.state() == wattlink::LinkState::Idle) {
+static void drawHome(bool force) {
+  const bool needSetup = wifi.state() == wattlink::LinkState::Idle;
+  const int key = needSetup ? 2 : (wifi.connected() ? 1 : 0);
+  if (!force && key == lastHome) {
+    return;
+  }
+  lastHome = key;
+  if (needSetup) {
     oled.show(wattlink::needSetupScreen());
   } else {
     oled.show(wattlink::statusScreen(wifi.connected(), false, 0, 0));
@@ -53,7 +60,7 @@ void setup() {
   cryptoResult = wattlink::runCryptoSelfTest();
   Serial.printf("Crypto self test: %s\n", wattlink::selfTestName(cryptoResult));
   wifi.begin(millis());
-  drawHome();
+  drawHome(true);
 }
 
 void loop() {
@@ -65,17 +72,14 @@ void loop() {
     if (!portal.isRunning()) {
       // The portal is over. The Wi-Fi is joined with what is saved now, which is the new setting after a save.
       wifi.begin(now);
-      drawHome();
+      drawHome(true);
     }
     delay(2);
     return;
   }
 
   wifi.update(now);
-  if (now - lastScreenMs >= 1000) {
-    lastScreenMs = now;
-    drawHome();
-  }
+  drawHome(false);
 
   const bool pressed = digitalRead(config::kHubButtonPin) == LOW;
 
@@ -84,13 +88,18 @@ void loop() {
       Serial.println("button: open the pairing window");
       break;
     case wattlink::ButtonEvent::Portal:
-      // The setup network needs the radio, so the link to the shop Wi-Fi is dropped first.
+      // The portal refuses to start without a display, because the setup code can only be shown there. That is checked before the link to
+      // the shop Wi-Fi is dropped, so a refusal costs nothing.
+      if (!portal.canStart()) {
+        Serial.println("Portal: not started");
+        break;
+      }
+      // The setup network needs the radio, so the link is dropped first.
       wifi.stop();
-      // The portal refuses to start without a display, because the setup code can only be shown there.
       if (!portal.start(now)) {
         Serial.println("Portal: not started");
         wifi.begin(now);
-        drawHome();
+        drawHome(true);
       }
       break;
     case wattlink::ButtonEvent::None:

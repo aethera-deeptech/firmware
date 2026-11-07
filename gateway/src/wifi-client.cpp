@@ -3,17 +3,11 @@
 #include <Arduino.h>
 #include <WiFi.h>
 
+#include "secure-wipe.h"
+
 namespace wattlink {
 
 namespace {
-
-// A plain memset on a buffer that is not read again can be removed by the optimizer, a write through a volatile pointer cannot.
-void wipe(void *data, size_t length) {
-  volatile uint8_t *bytes = static_cast<volatile uint8_t *>(data);
-  while (length-- > 0) {
-    *bytes++ = 0;
-  }
-}
 
 }  // namespace
 
@@ -51,6 +45,10 @@ void WifiClient::update(uint32_t nowMs) {
     if (settings_.loadWifi(&saved)) {
       WiFi.disconnect();
       WiFi.begin(saved.ssid, saved.password[0] != '\0' ? saved.password : nullptr);
+    } else {
+      // The settings are gone or damaged, so there is nothing to join. The home screen then asks for the setup.
+      Serial.println("WiFi: no settings");
+      stop();
     }
     wipe(&saved, sizeof(saved));
   } else if (action == LinkAction::Abort) {

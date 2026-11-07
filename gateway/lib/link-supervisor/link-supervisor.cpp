@@ -4,7 +4,7 @@ namespace wattlink {
 
 uint32_t Backoff::next() {
   const uint32_t current = nextMs_;
-  nextMs_ = nextMs_ >= kBackoffCapMs / 2 ? kBackoffCapMs : nextMs_ * 2;
+  nextMs_ = nextMs_ >= capMs_ / 2 ? capMs_ : nextMs_ * 2;
   return current;
 }
 
@@ -33,6 +33,12 @@ LinkAction LinkSupervisor::update(uint32_t nowMs, bool connected) {
       return LinkAction::None;
 
     case LinkState::Waiting:
+      // The core makes one try of its own after the first drop, so the link can come back while this class waits.
+      if (connected) {
+        state_ = LinkState::Connected;
+        connectedAtMs_ = nowMs;
+        return LinkAction::None;
+      }
       if (static_cast<int32_t>(nowMs - retryAtMs_) >= 0) {
         state_ = LinkState::Connecting;
         attemptStartedAtMs_ = nowMs;
@@ -43,7 +49,7 @@ LinkAction LinkSupervisor::update(uint32_t nowMs, bool connected) {
     case LinkState::Connecting:
       if (connected) {
         state_ = LinkState::Connected;
-        backoff_.reset();
+        connectedAtMs_ = nowMs;
         return LinkAction::None;
       }
       if (nowMs - attemptStartedAtMs_ >= kConnectTimeoutMs) {
@@ -54,6 +60,10 @@ LinkAction LinkSupervisor::update(uint32_t nowMs, bool connected) {
 
     case LinkState::Connected:
       if (!connected) {
+        // Only a link that stayed up for a while starts the waits again at the base.
+        if (nowMs - connectedAtMs_ >= kStableLinkMs) {
+          backoff_.reset();
+        }
         wait(nowMs);
       }
       return LinkAction::None;

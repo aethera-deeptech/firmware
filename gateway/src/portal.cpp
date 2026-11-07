@@ -7,6 +7,7 @@
 
 #include "portal-page.h"
 #include "screen-text.h"
+#include "secure-wipe.h"
 #include "setup-code.h"
 #include "wifi-form.h"
 
@@ -26,14 +27,6 @@ char pageBuffer[kPageBufferSize];
 
 uint32_t hardwareRandom(void *) {
   return esp_random();
-}
-
-// A plain memset on a buffer that is not read again can be removed by the optimizer, a write through a volatile pointer cannot.
-void wipe(void *data, size_t length) {
-  volatile uint8_t *bytes = static_cast<volatile uint8_t *>(data);
-  while (length-- > 0) {
-    *bytes++ = 0;
-  }
 }
 
 // Phones and laptops ask for these addresses to find out whether the network has internet. Answering with a redirect to the setup page
