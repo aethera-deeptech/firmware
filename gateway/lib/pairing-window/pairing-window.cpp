@@ -21,7 +21,11 @@ bool PairingWindow::beginPairing(uint32_t nowMs) {
     return false;
   }
   state_ = WindowState::Pairing;
-  endMs_ = nowMs + kPairingPendingMs;
+  // The pending time never reaches past the end of the window, so no pairing outlasts the 60 seconds after the last short press.
+  const uint32_t pendingEndMs = nowMs + kPairingPendingMs;
+  if (static_cast<int32_t>(pendingEndMs - endMs_) < 0) {
+    endMs_ = pendingEndMs;
+  }
   return true;
 }
 

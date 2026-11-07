@@ -148,9 +148,55 @@ void test_the_timing_runs_across_the_wrap_of_the_millis_counter() {
   TEST_ASSERT_FALSE(window.isOpen(start + kPairingWindowMs));
   TEST_ASSERT_EQUAL_UINT32(60, window.secondsLeft(start));
   TEST_ASSERT_EQUAL_UINT32(1, window.secondsLeft(start + (kPairingWindowMs - 1)));
-  window.press(start);
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(PressResult::Restarted), press(window, start));
   TEST_ASSERT_TRUE(window.beginPairing(start + 20000u));
   TEST_ASSERT_TRUE(window.commit(start + 20000u + 1000u));
+}
+
+void test_a_pairing_never_outlasts_the_window() {
+  PairingWindow window;
+  window.press(0);
+  TEST_ASSERT_TRUE(window.beginPairing(kPairingWindowMs - 1));
+  TEST_ASSERT_TRUE(window.isPairing(kPairingWindowMs - 1));
+  TEST_ASSERT_FALSE(window.isPairing(kPairingWindowMs));
+  TEST_ASSERT_FALSE(window.commit(kPairingWindowMs));
+}
+
+void test_a_pairing_early_in_the_window_gets_the_full_pending_time() {
+  PairingWindow window;
+  window.press(0);
+  TEST_ASSERT_TRUE(window.beginPairing(10000));
+  TEST_ASSERT_TRUE(window.isPairing(10000 + kPairingPendingMs - 1));
+  TEST_ASSERT_TRUE(window.commit(10000 + kPairingPendingMs - 1));
+}
+
+void test_the_pending_time_is_capped_at_the_window_end_across_the_wrap() {
+  PairingWindow window;
+  const uint32_t start = 0xFFFFFFFFu - 10000u;
+  window.press(start);
+  // The window ends 60000 ms after the start, which is after the wrap, and this request comes 5000 ms before that.
+  const uint32_t request = start + (kPairingWindowMs - 5000u);
+  TEST_ASSERT_TRUE(window.beginPairing(request));
+  TEST_ASSERT_TRUE(window.isPairing(start + (kPairingWindowMs - 1u)));
+  TEST_ASSERT_FALSE(window.isPairing(start + kPairingWindowMs));
+}
+
+void test_the_pending_time_crosses_the_wrap() {
+  PairingWindow window;
+  const uint32_t start = 0xFFFFFFFFu - 2000u;
+  window.press(start);
+  TEST_ASSERT_TRUE(window.beginPairing(start));
+  TEST_ASSERT_TRUE(window.isPairing(start + (kPairingPendingMs - 1u)));
+  TEST_ASSERT_TRUE(window.commit(start + (kPairingPendingMs - 1u)));
+}
+
+void test_no_seconds_are_left_while_a_pairing_is_in_progress() {
+  PairingWindow window;
+  window.press(0);
+  window.beginPairing(1000);
+  TEST_ASSERT_EQUAL_UINT32(0, window.secondsLeft(2000));
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(WindowState::Pairing), static_cast<int>(window.update(1000 + kPairingPendingMs - 1)));
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(WindowState::Closed), static_cast<int>(window.update(1000 + kPairingPendingMs)));
 }
 
 int main(int, char **) {
@@ -169,5 +215,10 @@ int main(int, char **) {
   RUN_TEST(test_a_commit_without_a_pairing_in_progress_is_refused);
   RUN_TEST(test_closing_ends_every_state);
   RUN_TEST(test_the_timing_runs_across_the_wrap_of_the_millis_counter);
+  RUN_TEST(test_a_pairing_never_outlasts_the_window);
+  RUN_TEST(test_a_pairing_early_in_the_window_gets_the_full_pending_time);
+  RUN_TEST(test_the_pending_time_is_capped_at_the_window_end_across_the_wrap);
+  RUN_TEST(test_the_pending_time_crosses_the_wrap);
+  RUN_TEST(test_no_seconds_are_left_while_a_pairing_is_in_progress);
   return UNITY_END();
 }

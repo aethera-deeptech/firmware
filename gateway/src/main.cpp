@@ -105,10 +105,11 @@ void loop() {
     return;
   }
 
+  // The button is read before any redraw, because a redraw takes tens of milliseconds and would make the press look longer.
+  const bool pressed = digitalRead(config::kHubButtonPin) == LOW;
+
   wifi.update(now);
   drawScreen(now);
-
-  const bool pressed = digitalRead(config::kHubButtonPin) == LOW;
 
   switch (button.update(pressed, now)) {
     case wattlink::ButtonEvent::Pairing:
