@@ -2,9 +2,13 @@
 
 namespace wattlink {
 
-void SetupSession::start(uint32_t nowMs) {
+bool SetupSession::start(uint32_t nowMs) {
+  if (state_ == SessionState::Running) {
+    return false;
+  }
   state_ = SessionState::Running;
   startedAtMs_ = nowMs;
+  return true;
 }
 
 SessionState SetupSession::update(uint32_t nowMs) {
@@ -24,15 +28,15 @@ void SetupSession::cancel() {
   state_ = SessionState::Idle;
 }
 
+bool SetupSession::isOpen(uint32_t nowMs) const {
+  return state_ == SessionState::Running && nowMs - startedAtMs_ < kSetupSessionMs;
+}
+
 uint32_t SetupSession::secondsLeft(uint32_t nowMs) const {
-  if (state_ != SessionState::Running) {
+  if (!isOpen(nowMs)) {
     return 0;
   }
-  const uint32_t elapsed = nowMs - startedAtMs_;
-  if (elapsed >= kSetupSessionMs) {
-    return 0;
-  }
-  return (kSetupSessionMs - elapsed + 999) / 1000;
+  return (kSetupSessionMs - (nowMs - startedAtMs_) + 999) / 1000;
 }
 
 }  // namespace wattlink
