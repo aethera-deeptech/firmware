@@ -68,11 +68,13 @@ jobs:
       - name: Run the host side tests
         run: pio test --project-dir gateway --environment native
 
-      # PlatformIO has no step for coverage, so gcovr reads the data that the native build wrote, and only the code of the libraries counts
+      # PlatformIO has no step for coverage, so gcovr reads the data that the native build wrote, and only the code of the libraries counts.
+      # gcov looks for the sources relative to the project folder, so gcovr runs in gateway and writes the report to the root.
       - name: Make the coverage report
+        working-directory: gateway
         run: |
-          gcovr --root . --object-directory gateway/.pio/build/native --filter 'gateway/lib/' \
-            --xml coverage.xml --print-summary
+          gcovr --root . --object-directory .pio/build/native --filter 'lib/' \
+            --xml ../coverage.xml --print-summary
 
       # A failed upload fails the step only on main, so an outage of Codecov does not block a pull request. A run without the token, such as
       # a pull request from a fork, fails the upload the same way.
