@@ -110,7 +110,7 @@ void test_a_command_frame_matches_the_reference_bytes() {
   Header opened;
   uint8_t plain[kMaxPayloadSize];
   size_t plainLength = 0;
-  TEST_ASSERT_TRUE(openFrame(opensslOpen, nullptr, gKey, expected, expectedLength, &opened, plain, sizeof(plain), &plainLength));
+  TEST_ASSERT_TRUE(openFrame(opensslOpen, nullptr, gKey, Direction::HubToNode, expected, expectedLength, &opened, plain, sizeof(plain), &plainLength));
   TEST_ASSERT_EQUAL_UINT(kCommandSize, plainLength);
   TEST_ASSERT_EQUAL_UINT8_ARRAY(payload, plain, kCommandSize);
   TEST_ASSERT_EQUAL_UINT32(0x04030201, opened.bootId);
@@ -177,7 +177,7 @@ void test_a_full_telemetry_frame_round_trips_at_the_size_limit() {
   Header opened;
   uint8_t plain[kMaxPayloadSize];
   size_t plainLength = 0;
-  TEST_ASSERT_TRUE(openFrame(opensslOpen, nullptr, gKey, frame, frameLength, &opened, plain, sizeof(plain), &plainLength));
+  TEST_ASSERT_TRUE(openFrame(opensslOpen, nullptr, gKey, Direction::NodeToHub, frame, frameLength, &opened, plain, sizeof(plain), &plainLength));
   TEST_ASSERT_EQUAL_UINT(payloadLength, plainLength);
   TEST_ASSERT_EQUAL_UINT8_ARRAY(payload, plain, payloadLength);
   Sample decoded[kMaxSamplesPerFrame];
@@ -189,7 +189,7 @@ void test_a_full_telemetry_frame_round_trips_at_the_size_limit() {
   TEST_ASSERT_EQUAL_UINT32(107, decoded[7].sampleSeq);
 }
 
-void test_every_changed_byte_of_a_frame_is_refused() {
+void test_every_changed_byte_of_a_frame_is_refused_by_the_header_the_length_or_the_tag() {
   const Header header = {kProtocolVersion, FrameType::Command, 5, 6};
   const Command command = {1, 2, 3, 0};
   uint8_t payload[kCommandSize];
@@ -205,7 +205,7 @@ void test_every_changed_byte_of_a_frame_is_refused() {
     Header opened;
     uint8_t plain[kMaxPayloadSize];
     size_t plainLength = 0;
-    TEST_ASSERT_FALSE_MESSAGE(openFrame(opensslOpen, nullptr, gKey, changed, length, &opened, plain, sizeof(plain), &plainLength), "a changed byte was accepted");
+    TEST_ASSERT_FALSE_MESSAGE(openFrame(opensslOpen, nullptr, gKey, Direction::HubToNode, changed, length, &opened, plain, sizeof(plain), &plainLength), "a changed byte was accepted");
   }
 }
 
@@ -222,11 +222,10 @@ void test_a_failed_open_leaves_zeros_in_the_payload_and_the_header_alone() {
   uint8_t plain[kMaxPayloadSize];
   memset(plain, 0x5A, sizeof(plain));
   size_t plainLength = 77;
-  TEST_ASSERT_FALSE(openFrame(opensslOpen, nullptr, gKey, frame, length, &opened, plain, sizeof(plain), &plainLength));
-  for (size_t i = 0; i < kAckSize; i++) {
+  TEST_ASSERT_FALSE(openFrame(opensslOpen, nullptr, gKey, Direction::HubToNode, frame, length, &opened, plain, sizeof(plain), &plainLength));
+  for (size_t i = 0; i < kMaxPayloadSize; i++) {
     TEST_ASSERT_EQUAL_UINT8(0, plain[i]);
   }
-  TEST_ASSERT_EQUAL_UINT8(0x5A, plain[kAckSize]);
   TEST_ASSERT_EQUAL_UINT8(9, opened.version);
   TEST_ASSERT_EQUAL_UINT(77, plainLength);
 }
@@ -244,7 +243,7 @@ void test_another_key_is_refused() {
   Header opened;
   uint8_t plain[kMaxPayloadSize];
   size_t plainLength = 0;
-  TEST_ASSERT_FALSE(openFrame(opensslOpen, nullptr, other, frame, length, &opened, plain, sizeof(plain), &plainLength));
+  TEST_ASSERT_FALSE(openFrame(opensslOpen, nullptr, other, Direction::HubToNode, frame, length, &opened, plain, sizeof(plain), &plainLength));
 }
 
 void test_a_frame_with_a_valid_tag_but_a_wrong_payload_length_is_refused() {
@@ -259,7 +258,7 @@ void test_a_frame_with_a_valid_tag_but_a_wrong_payload_length_is_refused() {
   Header opened;
   uint8_t plain[kMaxPayloadSize];
   size_t plainLength = 0;
-  TEST_ASSERT_FALSE(openFrame(opensslOpen, nullptr, gKey, frame, kHeaderSize + sizeof(payload) + kTagSize, &opened, plain, sizeof(plain), &plainLength));
+  TEST_ASSERT_FALSE(openFrame(opensslOpen, nullptr, gKey, Direction::HubToNode, frame, kHeaderSize + sizeof(payload) + kTagSize, &opened, plain, sizeof(plain), &plainLength));
 }
 
 void test_open_refuses_short_long_and_unencrypted_frames() {
@@ -270,14 +269,14 @@ void test_open_refuses_short_long_and_unencrypted_frames() {
   memset(frame, 0, sizeof(frame));
   frame[0] = kProtocolVersion;
   frame[1] = static_cast<uint8_t>(FrameType::Ack);
-  TEST_ASSERT_FALSE(openFrame(opensslOpen, nullptr, gKey, frame, 0, &opened, plain, sizeof(plain), &plainLength));
-  TEST_ASSERT_FALSE(openFrame(opensslOpen, nullptr, gKey, frame, kHeaderSize + kTagSize - 1, &opened, plain, sizeof(plain), &plainLength));
-  TEST_ASSERT_FALSE(openFrame(opensslOpen, nullptr, gKey, frame, kMaxFrameSize + 1, &opened, plain, sizeof(plain), &plainLength));
+  TEST_ASSERT_FALSE(openFrame(opensslOpen, nullptr, gKey, Direction::HubToNode, frame, 0, &opened, plain, sizeof(plain), &plainLength));
+  TEST_ASSERT_FALSE(openFrame(opensslOpen, nullptr, gKey, Direction::HubToNode, frame, kHeaderSize + kTagSize - 1, &opened, plain, sizeof(plain), &plainLength));
+  TEST_ASSERT_FALSE(openFrame(opensslOpen, nullptr, gKey, Direction::HubToNode, frame, kMaxFrameSize + 1, &opened, plain, sizeof(plain), &plainLength));
   frame[1] = static_cast<uint8_t>(FrameType::Hello);
-  TEST_ASSERT_FALSE(openFrame(opensslOpen, nullptr, gKey, frame, kHeaderSize + 4 + kTagSize, &opened, plain, sizeof(plain), &plainLength));
+  TEST_ASSERT_FALSE(openFrame(opensslOpen, nullptr, gKey, Direction::HubToNode, frame, kHeaderSize + 4 + kTagSize, &opened, plain, sizeof(plain), &plainLength));
   frame[1] = static_cast<uint8_t>(FrameType::Ack);
   frame[0] = 2;
-  TEST_ASSERT_FALSE(openFrame(opensslOpen, nullptr, gKey, frame, kHeaderSize + kAckSize + kTagSize, &opened, plain, sizeof(plain), &plainLength));
+  TEST_ASSERT_FALSE(openFrame(opensslOpen, nullptr, gKey, Direction::HubToNode, frame, kHeaderSize + kAckSize + kTagSize, &opened, plain, sizeof(plain), &plainLength));
 }
 
 void test_open_refuses_a_payload_buffer_that_is_too_small() {
@@ -290,8 +289,8 @@ void test_open_refuses_a_payload_buffer_that_is_too_small() {
   Header opened;
   uint8_t plain[kAckSize];
   size_t plainLength = 0;
-  TEST_ASSERT_FALSE(openFrame(opensslOpen, nullptr, gKey, frame, length, &opened, plain, kAckSize - 1, &plainLength));
-  TEST_ASSERT_TRUE(openFrame(opensslOpen, nullptr, gKey, frame, length, &opened, plain, kAckSize, &plainLength));
+  TEST_ASSERT_FALSE(openFrame(opensslOpen, nullptr, gKey, Direction::HubToNode, frame, length, &opened, plain, kAckSize - 1, &plainLength));
+  TEST_ASSERT_TRUE(openFrame(opensslOpen, nullptr, gKey, Direction::HubToNode, frame, length, &opened, plain, kAckSize, &plainLength));
 }
 
 void test_seal_refuses_bad_headers_lengths_and_buffers() {
@@ -326,7 +325,7 @@ void test_a_failing_cipher_gives_no_frame() {
   Header opened;
   uint8_t plain[kMaxPayloadSize];
   size_t plainLength = 0;
-  TEST_ASSERT_FALSE(openFrame(spyOpen, &spy, gKey, out, length, &opened, plain, sizeof(plain), &plainLength));
+  TEST_ASSERT_FALSE(openFrame(spyOpen, &spy, gKey, Direction::HubToNode, out, length, &opened, plain, sizeof(plain), &plainLength));
 }
 
 void test_plain_frames_are_the_header_and_the_payload() {
@@ -382,6 +381,108 @@ void test_plain_frames_refuse_encrypted_types_wrong_lengths_and_small_buffers() 
   TEST_ASSERT_FALSE(parsePlainFrame(hello, kHeaderSize - 1, &parsed, &body, &bodyLength));
 }
 
+void test_a_frame_of_the_other_direction_is_refused_even_with_a_good_tag() {
+  const Header ack = {kProtocolVersion, FrameType::Ack, 1, 1};
+  const Ack ackValue = {1, 2};
+  uint8_t ackPayload[kAckSize];
+  encodeAck(ackValue, ackPayload, sizeof(ackPayload));
+  uint8_t ackFrame[kMaxFrameSize];
+  const size_t ackLength = sealFrame(opensslSeal, nullptr, gKey, ack, ackPayload, sizeof(ackPayload), ackFrame, sizeof(ackFrame));
+
+  const Header result = {kProtocolVersion, FrameType::Result, 1, 1};
+  const Result resultValue = {1, 2, 1};
+  uint8_t resultPayload[kResultSize];
+  encodeResult(resultValue, resultPayload, sizeof(resultPayload));
+  uint8_t resultFrame[kMaxFrameSize];
+  const size_t resultLength = sealFrame(opensslSeal, nullptr, gKey, result, resultPayload, sizeof(resultPayload), resultFrame, sizeof(resultFrame));
+
+  Header opened;
+  uint8_t plain[kMaxPayloadSize];
+  size_t plainLength = 0;
+  // A hub expects node frames, so its own ACK played back to it is refused. A node expects hub frames, so a RESULT is refused.
+  TEST_ASSERT_FALSE(openFrame(opensslOpen, nullptr, gKey, Direction::NodeToHub, ackFrame, ackLength, &opened, plain, sizeof(plain), &plainLength));
+  TEST_ASSERT_FALSE(openFrame(opensslOpen, nullptr, gKey, Direction::HubToNode, resultFrame, resultLength, &opened, plain, sizeof(plain), &plainLength));
+  TEST_ASSERT_TRUE(openFrame(opensslOpen, nullptr, gKey, Direction::HubToNode, ackFrame, ackLength, &opened, plain, sizeof(plain), &plainLength));
+  TEST_ASSERT_TRUE(openFrame(opensslOpen, nullptr, gKey, Direction::NodeToHub, resultFrame, resultLength, &opened, plain, sizeof(plain), &plainLength));
+}
+
+void test_every_failure_leaves_zeros_in_the_payload_buffer() {
+  const Header header = {kProtocolVersion, FrameType::Ack, 1, 1};
+  const Ack ack = {1, 2};
+  uint8_t payload[kAckSize];
+  encodeAck(ack, payload, sizeof(payload));
+  uint8_t frame[kMaxFrameSize];
+  const size_t length = sealFrame(opensslSeal, nullptr, gKey, header, payload, sizeof(payload), frame, sizeof(frame));
+
+  Header opened;
+  size_t plainLength = 0;
+  uint8_t plain[kMaxPayloadSize];
+
+  memset(plain, 0x5A, sizeof(plain));
+  TEST_ASSERT_FALSE(openFrame(opensslOpen, nullptr, gKey, Direction::NodeToHub, frame, length, &opened, plain, sizeof(plain), &plainLength));
+  TEST_ASSERT_EQUAL_UINT8(0, plain[0]);
+  TEST_ASSERT_EQUAL_UINT8(0, plain[kMaxPayloadSize - 1]);
+
+  memset(plain, 0x5A, sizeof(plain));
+  TEST_ASSERT_FALSE(openFrame(opensslOpen, nullptr, gKey, Direction::HubToNode, frame, kHeaderSize + 3, &opened, plain, sizeof(plain), &plainLength));
+  TEST_ASSERT_EQUAL_UINT8(0, plain[0]);
+
+  // A buffer smaller than the maximum is cleared up to its own size and not beyond it.
+  uint8_t guarded[kAckSize + 4];
+  memset(guarded, 0x5A, sizeof(guarded));
+  TEST_ASSERT_FALSE(openFrame(opensslOpen, nullptr, gKey, Direction::NodeToHub, frame, length, &opened, guarded, kAckSize, &plainLength));
+  TEST_ASSERT_EQUAL_UINT8(0, guarded[kAckSize - 1]);
+  TEST_ASSERT_EQUAL_UINT8(0x5A, guarded[kAckSize]);
+  TEST_ASSERT_FALSE(openFrame(opensslOpen, nullptr, gKey, Direction::HubToNode, frame, length, &opened, nullptr, kAckSize, &plainLength));
+}
+
+void test_a_hello_ack_is_not_an_encrypted_frame() {
+  uint8_t out[kMaxFrameSize];
+  const Header header = {kProtocolVersion, FrameType::HelloAck, 1, 1};
+  TEST_ASSERT_EQUAL_UINT(0, sealFrame(opensslSeal, nullptr, gKey, header, nullptr, 0, out, sizeof(out)));
+  uint8_t frame[kHeaderSize + kTagSize] = {kProtocolVersion, static_cast<uint8_t>(FrameType::HelloAck)};
+  Header opened;
+  uint8_t plain[kMaxPayloadSize];
+  size_t plainLength = 0;
+  TEST_ASSERT_FALSE(openFrame(opensslOpen, nullptr, gKey, Direction::HubToNode, frame, sizeof(frame), &opened, plain, sizeof(plain), &plainLength));
+}
+
+void test_the_pairing_frames_round_trip_through_the_plain_frame_functions() {
+  PairRequest request;
+  request.kind = NodeKind::Clamp;
+  for (size_t i = 0; i < kPublicKeyBytes; i++) {
+    request.nodePublicKey[i] = static_cast<uint8_t>(0x40 + i);
+  }
+  uint8_t payload[kPairRequestSize];
+  encodePairRequest(request, payload, sizeof(payload));
+  const Header header = {kProtocolVersion, FrameType::PairRequest, 2, 0};
+  uint8_t frame[kMaxFrameSize];
+  const size_t length = buildPlainFrame(header, payload, sizeof(payload), frame, sizeof(frame));
+  TEST_ASSERT_EQUAL_UINT(kHeaderSize + kPairRequestSize, length);
+
+  Header parsed;
+  const uint8_t *body = nullptr;
+  size_t bodyLength = 0;
+  TEST_ASSERT_TRUE(parsePlainFrame(frame, length, &parsed, &body, &bodyLength));
+  PairRequest decoded;
+  TEST_ASSERT_TRUE(decodePairRequest(body, bodyLength, &decoded));
+  TEST_ASSERT_EQUAL_UINT8(2, static_cast<uint8_t>(decoded.kind));
+  TEST_ASSERT_EQUAL_UINT8_ARRAY(request.nodePublicKey, decoded.nodePublicKey, kPublicKeyBytes);
+
+  PairAccept accept;
+  memset(&accept, 0x11, sizeof(accept));
+  uint8_t acceptPayload[kPairAcceptSize];
+  encodePairAccept(accept, acceptPayload, sizeof(acceptPayload));
+  const Header acceptHeader = {kProtocolVersion, FrameType::PairAccept, 1, 0};
+  const size_t acceptLength = buildPlainFrame(acceptHeader, acceptPayload, sizeof(acceptPayload), frame, sizeof(frame));
+  TEST_ASSERT_EQUAL_UINT(kHeaderSize + kPairAcceptSize, acceptLength);
+  TEST_ASSERT_TRUE(parsePlainFrame(frame, acceptLength, &parsed, &body, &bodyLength));
+  PairAccept acceptDecoded;
+  TEST_ASSERT_TRUE(decodePairAccept(body, bodyLength, &acceptDecoded));
+  TEST_ASSERT_EQUAL_UINT8_ARRAY(accept.hubPublicKey, acceptDecoded.hubPublicKey, kPublicKeyBytes);
+  TEST_ASSERT_FALSE(parsePlainFrame(frame, acceptLength + 1, &parsed, &body, &bodyLength));
+}
+
 void test_the_largest_payload_matches_the_frame_limit() {
   TEST_ASSERT_EQUAL_UINT(224, kMaxPayloadSize);
   TEST_ASSERT_TRUE(kTelemetryPrefixSize + kMaxSamplesPerFrame * kSampleSize <= kMaxPayloadSize);
@@ -394,11 +495,15 @@ int main(int, char **) {
   RUN_TEST(test_a_result_frame_uses_the_node_to_hub_direction);
   RUN_TEST(test_the_nonce_and_the_associated_data_follow_the_header);
   RUN_TEST(test_a_full_telemetry_frame_round_trips_at_the_size_limit);
-  RUN_TEST(test_every_changed_byte_of_a_frame_is_refused);
+  RUN_TEST(test_every_changed_byte_of_a_frame_is_refused_by_the_header_the_length_or_the_tag);
   RUN_TEST(test_a_failed_open_leaves_zeros_in_the_payload_and_the_header_alone);
   RUN_TEST(test_another_key_is_refused);
   RUN_TEST(test_a_frame_with_a_valid_tag_but_a_wrong_payload_length_is_refused);
   RUN_TEST(test_open_refuses_short_long_and_unencrypted_frames);
+  RUN_TEST(test_a_frame_of_the_other_direction_is_refused_even_with_a_good_tag);
+  RUN_TEST(test_every_failure_leaves_zeros_in_the_payload_buffer);
+  RUN_TEST(test_a_hello_ack_is_not_an_encrypted_frame);
+  RUN_TEST(test_the_pairing_frames_round_trip_through_the_plain_frame_functions);
   RUN_TEST(test_open_refuses_a_payload_buffer_that_is_too_small);
   RUN_TEST(test_seal_refuses_bad_headers_lengths_and_buffers);
   RUN_TEST(test_a_failing_cipher_gives_no_frame);

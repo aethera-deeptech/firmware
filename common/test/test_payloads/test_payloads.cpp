@@ -209,6 +209,11 @@ void test_which_types_are_encrypted_and_which_way_they_travel() {
   }
 }
 
+void test_an_unknown_type_counts_as_a_node_frame() {
+  TEST_ASSERT_EQUAL_UINT8(0, static_cast<uint8_t>(directionOf(static_cast<FrameType>(0x99))));
+  TEST_ASSERT_FALSE(isEncryptedType(static_cast<FrameType>(0x99)));
+}
+
 int main(int, char **) {
   UNITY_BEGIN();
   RUN_TEST(test_hello_layout_and_round_trip);
@@ -223,5 +228,6 @@ int main(int, char **) {
   RUN_TEST(test_the_telemetry_length_needs_one_to_eight_whole_samples);
   RUN_TEST(test_an_unknown_type_has_no_valid_length);
   RUN_TEST(test_which_types_are_encrypted_and_which_way_they_travel);
+  RUN_TEST(test_an_unknown_type_counts_as_a_node_frame);
   return UNITY_END();
 }

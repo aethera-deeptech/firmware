@@ -17,9 +17,8 @@ size_t buildPlainFrame(const Header &header, const uint8_t *payload, size_t leng
       capacity < kHeaderSize + length) {
     return 0;
   }
-  if (!encodeHeader(header, out, capacity)) {
-    return 0;
-  }
+  // The capacity is at least the size of the header, and the header was checked above, so this cannot fail.
+  encodeHeader(header, out, capacity);
   if (length > 0) {
     memcpy(out + kHeaderSize, payload, length);
   }
@@ -50,9 +49,8 @@ size_t sealFrame(AesGcmSeal seal, void *context, const uint8_t key[kAesKeySize],
   if (total > kMaxFrameSize || capacity < total) {
     return 0;
   }
-  if (!encodeHeader(header, out, capacity)) {
-    return 0;
-  }
+  // The capacity covers the whole frame and the header was checked above, so this cannot fail.
+  encodeHeader(header, out, capacity);
   uint8_t nonce[kNonceSize];
   buildNonce(header.bootId, header.counter, directionOf(header.type), nonce);
   if (!seal(context, key, nonce, out, kHeaderSize, payload, length, out + kHeaderSize, out + kHeaderSize + length)) {
@@ -62,11 +60,17 @@ size_t sealFrame(AesGcmSeal seal, void *context, const uint8_t key[kAesKeySize],
   return total;
 }
 
-bool openFrame(AesGcmOpen open, void *context, const uint8_t key[kAesKeySize], const uint8_t *frame, size_t frameLength, Header *header,
-               uint8_t *payload, size_t capacity, size_t *payloadLength) {
+bool openFrame(AesGcmOpen open, void *context, const uint8_t key[kAesKeySize], Direction expected, const uint8_t *frame, size_t frameLength,
+               Header *header, uint8_t *payload, size_t capacity, size_t *payloadLength) {
+  // Every failure below leaves zeros in the payload buffer, so a caller that ignores the result reads no stale bytes.
+  const size_t clearLength = capacity < kMaxPayloadSize ? capacity : kMaxPayloadSize;
+  if (payload != nullptr && clearLength > 0) {
+    memset(payload, 0, clearLength);
+  }
+
   Header parsed;
-  if (frameLength > kMaxFrameSize || !decodeHeader(frame, frameLength, &parsed) || !isEncryptedType(parsed.type) ||
-      frameLength < kHeaderSize + kTagSize) {
+  if (payload == nullptr || frameLength > kMaxFrameSize || !decodeHeader(frame, frameLength, &parsed) || !isEncryptedType(parsed.type) ||
+      directionOf(parsed.type) != expected || frameLength < kHeaderSize + kTagSize) {
     return false;
   }
   const size_t size = frameLength - kHeaderSize - kTagSize;
@@ -76,9 +80,7 @@ bool openFrame(AesGcmOpen open, void *context, const uint8_t key[kAesKeySize], c
   uint8_t nonce[kNonceSize];
   buildNonce(parsed.bootId, parsed.counter, directionOf(parsed.type), nonce);
   if (!open(context, key, nonce, frame, kHeaderSize, frame + kHeaderSize, size, frame + kHeaderSize + size, payload)) {
-    if (size > 0) {
-      memset(payload, 0, size);
-    }
+    memset(payload, 0, size);
     return false;
   }
   *header = parsed;

@@ -38,9 +38,18 @@ size_t sealFrame(AesGcmSeal seal, void *context, const uint8_t key[kAesKeySize],
                  size_t length, uint8_t *out, size_t capacity);
 
 // Checks the header, the type, the length and the tag, and decrypts. On success it fills the header and the payload and returns true.
-// On any failure it returns false, leaves the header as it was and writes zeros into the payload buffer. It does not check freshness, so
-// the caller compares the bootId and the counter with what it kept for the peer after this returns true.
-bool openFrame(AesGcmOpen open, void *context, const uint8_t key[kAesKeySize], const uint8_t *frame, size_t frameLength, Header *header,
-               uint8_t *payload, size_t capacity, size_t *payloadLength);
+// On any failure it returns false, leaves the header as it was and writes zeros into the payload buffer (up to kMaxPayloadSize bytes of it).
+//
+// The key serves both directions, so the caller says which direction it expects. A hub passes NodeToHub and accepts TELEMETRY and RESULT.
+// A node passes HubToNode and accepts ACK and COMMAND. A frame of the other direction is refused, so a frame that a device sent itself
+// cannot be played back to it.
+//
+// A true result proves that the key holder made the frame. It does not prove that the frame is fresh. The caller still has to do this.
+// 1. Pick the key by the MAC of the sender.
+// 2. Compare the bootId and the counter with what it kept for the peer, as the section Order and repeats of the protocol document says.
+// 3. Write a new bootId to flash only after this returned true.
+// 4. Check the fields that bind a frame to the receiver: the hubBootId of TELEMETRY and RESULT, the nodeBootId of ACK and the echo of COMMAND.
+bool openFrame(AesGcmOpen open, void *context, const uint8_t key[kAesKeySize], Direction expected, const uint8_t *frame, size_t frameLength,
+               Header *header, uint8_t *payload, size_t capacity, size_t *payloadLength);
 
 }  // namespace wattlink
