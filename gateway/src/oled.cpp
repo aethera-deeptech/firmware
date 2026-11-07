@@ -21,6 +21,7 @@ static_assert(kMaxScreenLines * kLineHeight <= 64, "the lines must fit the heigh
 bool Oled::begin() {
   // U8g2 takes the I2C address multiplied by 2, and the call must come before begin().
   display.setI2CAddress(config::kOledAddress << 1);
+  ready_ = false;
   if (!display.begin()) {
     return false;
   }
@@ -30,10 +31,14 @@ bool Oled::begin() {
     return false;
   }
   display.setFont(u8g2_font_6x10_tf);
+  ready_ = true;
   return true;
 }
 
 void Oled::show(const Screen &screen) {
+  if (!ready_) {
+    return;
+  }
   display.clearBuffer();
   for (uint8_t i = 0; i < screen.count && i < kMaxScreenLines; i++) {
     // drawStr puts the baseline at y, so the first line is at y = 10 and its text stays inside the first 10 rows.
@@ -43,6 +48,9 @@ void Oled::show(const Screen &screen) {
 }
 
 void Oled::clear() {
+  if (!ready_) {
+    return;
+  }
   display.clearDisplay();
 }
 
