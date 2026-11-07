@@ -32,15 +32,16 @@ struct SaveCheck {
 };
 
 // Decides what the hub does with the form. An invalid form is refused. An empty password is an open network, and the first time the
-// owner submits it the page asks again, because the hub would then join the network with no encryption. openConfirmed is true on the
-// second submit.
-SaveCheck decideSave(const char *ssid, const char *password, bool openConfirmed);
+// owner submits it the page asks again, because the hub would then join the network with no encryption. The second submit carries the
+// name that the owner confirmed (the value of the hidden field), and it counts only when it equals the name in the form. So a
+// confirmation for one network never carries over to another name. A null or empty confirmedSsid means no confirmation.
+SaveCheck decideSave(const char *ssid, const char *password, const char *confirmedSsid);
 
 // What the page shows. The password is never part of it, so the page can never send a password back to the phone.
 struct PageModel {
   Notice notice;
   const char *ssid;    // the name that the owner typed, shown again in the field. May be null.
-  bool openConfirmed;  // adds the hidden field that confirms an open network
+  bool openConfirmed;  // adds the hidden field that holds the name that is confirmed as an open network
 };
 
 // The names of the form fields, shared with the code that reads the form.
