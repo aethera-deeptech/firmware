@@ -1,0 +1,7 @@
+{
+  "name": "pairing-window",
+  "version": "0.1.0",
+  "description": "The timer of the pairing window of the hub, with the restart rule for a short press",
+  "frameworks": "*",
+  "platforms": "*"
+}
