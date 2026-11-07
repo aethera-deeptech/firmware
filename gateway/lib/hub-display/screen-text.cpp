@@ -81,4 +81,12 @@ Screen statusScreen(bool wifiUp, bool serverUp, unsigned nodes, uint32_t watts) 
   return screen;
 }
 
+Screen needSetupScreen() {
+  Screen screen = emptyScreen();
+  appendLine(&screen, "%s", text::kNeedSetupTitle);
+  appendLine(&screen, "%s", text::kNeedSetupHintFirst);
+  appendLine(&screen, "%s", text::kNeedSetupHintSecond);
+  return screen;
+}
+
 }  // namespace wattlink

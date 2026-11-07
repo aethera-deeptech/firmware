@@ -30,6 +30,10 @@ constexpr const char *kPairingHintSecond = "selama 3 detik";
 constexpr const char *kClaimTitle = "Kode klaim:";
 constexpr const char *kClaimHint = "Masukkan di aplikasi";
 
+constexpr const char *kNeedSetupTitle = "Wi-Fi belum diatur";
+constexpr const char *kNeedSetupHintFirst = "Tahan tombol Hub";
+constexpr const char *kNeedSetupHintSecond = "selama 3 detik";
+
 constexpr const char *kWifiConnected = "Wi-Fi: terhubung";
 constexpr const char *kWifiDown = "Wi-Fi: putus";
 constexpr const char *kServerConnected = "Server: terhubung";
@@ -49,6 +53,9 @@ static_assert(constLength(text::kPairingHintFirst) <= kLineWidth, "line too long
 static_assert(constLength(text::kPairingHintSecond) <= kLineWidth, "line too long");
 static_assert(constLength(text::kClaimTitle) <= kLineWidth, "line too long");
 static_assert(constLength(text::kClaimHint) <= kLineWidth, "line too long");
+static_assert(constLength(text::kNeedSetupTitle) <= kLineWidth, "line too long");
+static_assert(constLength(text::kNeedSetupHintFirst) <= kLineWidth, "line too long");
+static_assert(constLength(text::kNeedSetupHintSecond) <= kLineWidth, "line too long");
 static_assert(constLength(text::kWifiConnected) <= kLineWidth, "line too long");
 static_assert(constLength(text::kWifiDown) <= kLineWidth, "line too long");
 static_assert(constLength(text::kServerConnected) <= kLineWidth, "line too long");

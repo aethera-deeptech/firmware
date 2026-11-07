@@ -1,0 +1,7 @@
+{
+  "name": "secure-wipe",
+  "version": "0.1.0",
+  "description": "Zeroes a buffer in a way that the optimizer cannot remove",
+  "frameworks": "*",
+  "platforms": "*"
+}

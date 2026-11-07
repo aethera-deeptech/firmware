@@ -21,6 +21,10 @@ class Portal {
  public:
   Portal(SettingsStore &settings, Oled &oled);
 
+  // True when start() can succeed as far as the caller can know: no session runs and the display answers. The caller checks this before it
+  // drops the Wi-Fi link, so a refusal costs nothing.
+  bool canStart() const { return !running_ && oled_.ready(); }
+
   // Opens the setup network. Returns false, with everything closed, when a session already runs, when the display is not ready (the
   // code could not be shown), when the random source is stuck or when the radio, the DNS server or the web server fails to start.
   bool start(uint32_t nowMs);

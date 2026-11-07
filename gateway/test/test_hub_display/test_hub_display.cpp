@@ -260,6 +260,15 @@ void test_a_missing_text_shows_as_empty_and_a_long_version_is_cut() {
   TEST_ASSERT_EQUAL_UINT(kLineWidth, strlen(longVersion.line[1]));
 }
 
+void test_the_need_setup_screen_tells_how_to_start() {
+  const Screen screen = needSetupScreen();
+  TEST_ASSERT_EQUAL_UINT8(3, screen.count);
+  TEST_ASSERT_EQUAL_STRING("Wi-Fi belum diatur", screen.line[0]);
+  TEST_ASSERT_EQUAL_STRING("Tahan tombol Hub", screen.line[1]);
+  TEST_ASSERT_EQUAL_STRING("selama 3 detik", screen.line[2]);
+  assertLinesFit(screen);
+}
+
 int main(int, char **) {
   UNITY_BEGIN();
   RUN_TEST(test_the_first_four_bytes_of_the_mac_do_not_change_the_network_name);
@@ -286,5 +295,6 @@ int main(int, char **) {
   RUN_TEST(test_the_status_screen_for_each_state);
   RUN_TEST(test_the_status_screen_fits_with_the_largest_numbers);
   RUN_TEST(test_no_screen_has_more_lines_than_the_display_can_show);
+  RUN_TEST(test_the_need_setup_screen_tells_how_to_start);
   return UNITY_END();
 }

@@ -1,0 +1,7 @@
+{
+  "name": "link-supervisor",
+  "version": "0.1.0",
+  "description": "The timing of a network link that must be joined, watched and joined again, with a growing wait between tries",
+  "frameworks": "*",
+  "platforms": "*"
+}
