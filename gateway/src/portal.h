@@ -5,6 +5,7 @@
 #include <stdint.h>
 
 #include "oled.h"
+#include "portal-page.h"
 #include "settings-store.h"
 #include "setup-session.h"
 
@@ -34,6 +35,7 @@ class Portal {
   void stop();
   void sendPage(int status, const PageModel &model);
   void sendExpired();
+  void sendSaved();
   void sendRedirect();
   void handleRoot();
   void handleSave();

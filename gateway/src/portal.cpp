@@ -54,6 +54,7 @@ const char *const kProbePaths[] = {
 
 Portal::Portal(SettingsStore &settings, Oled &oled) : settings_(settings), oled_(oled), server_(80) {
   server_.on("/", HTTP_GET, [this]() { handleRoot(); });
+  server_.on("/", HTTP_HEAD, [this]() { handleRoot(); });
   server_.on(kSavePath, HTTP_POST, [this]() { handleSave(); });
   for (const char *path : kProbePaths) {
     server_.on(path, HTTP_ANY, [this]() { sendRedirect(); });
@@ -78,7 +79,9 @@ bool Portal::start(uint32_t nowMs) {
   }
 
   char code[kSetupCodeSize];
-  if (!makeSetupCode(hardwareRandom, nullptr, code)) {
+  // WiFi.softAP makes an OPEN network when the password is empty, so a code of the wrong length must never reach it.
+  if (!makeSetupCode(hardwareRandom, nullptr, code) || strlen(code) != kSetupCodeLength) {
+    wipe(code, sizeof(code));
     stop();
     return false;
   }
@@ -99,8 +102,10 @@ bool Portal::start(uint32_t nowMs) {
     return false;
   }
 
+  // A DNS server that answers 0.0.0.0 for every name would leave the portal silently dead.
+  const IPAddress apAddress = WiFi.softAPIP();
   dns_.setErrorReplyCode(DNSReplyCode::NoError);
-  if (!dns_.start(53, "*", WiFi.softAPIP())) {
+  if (apAddress == IPAddress(0, 0, 0, 0) || !dns_.start(53, "*", apAddress)) {
     stop();
     return false;
   }
@@ -169,7 +174,22 @@ void Portal::sendRedirect() {
   server_.send(302, "text/plain", "");
 }
 
+void Portal::sendSaved() {
+  const size_t length = renderSavedPage(pageBuffer, sizeof(pageBuffer));
+  server_.sendHeader("Cache-Control", "no-store");
+  if (length == 0) {
+    server_.send(200, "text/plain; charset=utf-8", "Tersimpan.");
+  } else {
+    server_.send(200, "text/html; charset=utf-8", pageBuffer);
+  }
+}
+
 void Portal::handleRoot() {
+  // After the save the network stays up for a moment. A second tap on Save or a reload shows the same confirmation.
+  if (closing_) {
+    sendSaved();
+    return;
+  }
   if (!session_.isOpen(millis())) {
     sendExpired();
     return;
@@ -179,6 +199,10 @@ void Portal::handleRoot() {
 }
 
 void Portal::handleSave() {
+  if (closing_) {
+    sendSaved();
+    return;
+  }
   const uint32_t now = millis();
   if (!session_.isOpen(now)) {
     sendExpired();
@@ -214,13 +238,7 @@ void Portal::handleSave() {
     return;
   }
 
-  const size_t length = renderSavedPage(pageBuffer, sizeof(pageBuffer));
-  server_.sendHeader("Cache-Control", "no-store");
-  if (length == 0) {
-    server_.send(200, "text/plain; charset=utf-8", "Tersimpan.");
-  } else {
-    server_.send(200, "text/html; charset=utf-8", pageBuffer);
-  }
+  sendSaved();
   closing_ = true;
   closeAtMs_ = now + kCloseDelayMs;
   Serial.println("Portal: saved");

@@ -57,6 +57,8 @@ void loop() {
       // The portal refuses to start without a display, because the setup code can only be shown there.
       if (!portal.start(now)) {
         Serial.println("Portal: not started");
+        // A start that failed halfway cleared the display, so the boot screen comes back.
+        oled.show(wattlink::bootScreen(config::kFirmwareVersion));
       }
       break;
     case wattlink::ButtonEvent::None:
