@@ -131,6 +131,8 @@ void test_the_shown_code_handles_short_long_and_missing_text() {
   char shown[kSetupCodeShownSize];
   formatSetupCode("ABCDEF", shown);
   TEST_ASSERT_EQUAL_STRING("ABCD-EF", shown);
+  formatSetupCode("ABCDEFGH", shown);
+  TEST_ASSERT_EQUAL_STRING("ABCD-EFGH", shown);
   formatSetupCode("ABCD", shown);
   TEST_ASSERT_EQUAL_STRING("ABCD", shown);
   formatSetupCode("", shown);
@@ -227,6 +229,7 @@ void test_the_status_screen_fits_with_the_largest_numbers() {
 void test_no_screen_has_more_lines_than_the_display_can_show() {
   TEST_ASSERT_TRUE(kMaxScreenLines <= 8);
   TEST_ASSERT_TRUE(bootScreen("0.1.0").count <= kMaxScreenLines);
+  TEST_ASSERT_TRUE(portalScreen("WATTLINK-E084", "ABCDEFGHJKMN").count <= kMaxScreenLines);
   TEST_ASSERT_TRUE(statusScreen(true, true, 1, 1).count <= kMaxScreenLines);
 }
 

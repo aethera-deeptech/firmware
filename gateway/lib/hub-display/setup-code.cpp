@@ -10,7 +10,8 @@ namespace {
 constexpr uint32_t kDrawLimit = 4294967292u;
 
 static_assert(kDrawLimit % kSetupCodeAlphabetSize == 0, "the draw limit must be a multiple of the alphabet size");
-static_assert(kDrawLimit + kSetupCodeAlphabetSize > 4294967295u, "the draw limit must be the largest such multiple");
+// The subtraction cannot wrap, and size_t is 32 bit on the chip, so a sum here would give a wrong answer on the chip only.
+static_assert(0xFFFFFFFFu - kDrawLimit < kSetupCodeAlphabetSize, "the draw limit must be the largest such multiple");
 
 }  // namespace
 
