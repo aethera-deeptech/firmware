@@ -18,6 +18,7 @@ struct Screen {
 };
 
 Screen bootScreen(const char *version);
+// The setup code is the plain code, and the screen shows it in groups of 4.
 Screen portalScreen(const char *apName, const char *setupCode);
 Screen pairingScreen(unsigned secondsLeft);
 Screen claimScreen(const char *claimCode);

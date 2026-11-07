@@ -4,6 +4,8 @@
 #include <stdio.h>
 #include <string.h>
 
+#include "setup-code.h"
+
 namespace wattlink {
 
 namespace {
@@ -46,8 +48,11 @@ Screen portalScreen(const char *apName, const char *setupCode) {
   Screen screen = emptyScreen();
   appendLine(&screen, "%s", text::kPortalTitle);
   appendLine(&screen, text::kPortalWifiFormat, orEmpty(apName));
-  appendLine(&screen, text::kPortalCodeFormat, orEmpty(setupCode));
+  char shown[kSetupCodeShownSize];
+  formatSetupCode(setupCode, shown);
+  appendLine(&screen, text::kPortalCodeFormat, shown);
   appendLine(&screen, "%s", text::kPortalOpen);
+  appendLine(&screen, "%s", text::kPortalTypeHint);
   return screen;
 }
 
