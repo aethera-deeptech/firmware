@@ -2,6 +2,7 @@
 
 #include "config.h"
 #include "hub-button.h"
+#include "screen-text.h"
 
 static wattlink::ButtonClassifier button;
 
@@ -9,6 +10,11 @@ void setup() {
   Serial.begin(115200);
   pinMode(config::kHubButtonPin, INPUT_PULLUP);
   Serial.printf("WATTLINK hub %s\n", config::kFirmwareVersion);
+  // The OLED driver comes later. Until then the boot screen goes to the serial port, which also makes CI build the display code for the chip.
+  const wattlink::Screen boot = wattlink::bootScreen(config::kFirmwareVersion);
+  for (uint8_t i = 0; i < boot.count; i++) {
+    Serial.println(boot.line[i]);
+  }
 }
 
 void loop() {

@@ -1,0 +1,7 @@
+{
+  "name": "hub-display",
+  "version": "0.1.0",
+  "description": "The texts of the hub display, the setup network name and the setup code",
+  "frameworks": "*",
+  "platforms": "*"
+}
