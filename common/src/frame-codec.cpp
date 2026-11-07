@@ -20,7 +20,7 @@ bool isKnownFrameType(uint8_t value) {
 }
 
 bool encodeHeader(const Header &header, uint8_t *out, size_t capacity) {
-  if (capacity < kHeaderSize || !isKnownFrameType(static_cast<uint8_t>(header.type))) {
+  if (capacity < kHeaderSize || header.version != kProtocolVersion || !isKnownFrameType(static_cast<uint8_t>(header.type))) {
     return false;
   }
   out[0] = header.version;

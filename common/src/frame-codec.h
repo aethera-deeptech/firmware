@@ -61,7 +61,8 @@ struct Sample {
 
 bool isKnownFrameType(uint8_t value);
 
-// Writes kHeaderSize bytes. Returns false when the buffer is too small or the type is unknown.
+// Writes kHeaderSize bytes. Returns false when the buffer is too small, the version is not kProtocolVersion or the type is unknown,
+// so a frame that the decoder would refuse is never written.
 bool encodeHeader(const Header &header, uint8_t *out, size_t capacity);
 
 // Returns false for a short buffer, a version other than kProtocolVersion or an unknown type.

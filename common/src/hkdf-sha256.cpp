@@ -17,7 +17,9 @@ bool hkdfSha256(HmacSha256 hmac, void *context, const uint8_t *salt, size_t salt
   }
 
   uint8_t prk[kSha256Size];
-  hmac(context, salt, saltLength, ikm, ikmLength, prk);
+  if (!hmac(context, salt, saltLength, ikm, ikmLength, prk)) {
+    return false;
+  }
 
   uint8_t block[kSha256Size + kMaxHkdfInfoSize + 1];
   uint8_t previous[kSha256Size];
@@ -36,7 +38,9 @@ bool hkdfSha256(HmacSha256 hmac, void *context, const uint8_t *salt, size_t salt
     }
     block[length++] = counter;
 
-    hmac(context, prk, kSha256Size, block, length, previous);
+    if (!hmac(context, prk, kSha256Size, block, length, previous)) {
+      return false;
+    }
     previousLength = kSha256Size;
 
     const size_t take = okmLength - produced < kSha256Size ? okmLength - produced : kSha256Size;

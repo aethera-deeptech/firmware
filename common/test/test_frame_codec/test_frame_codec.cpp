@@ -76,6 +76,20 @@ void test_encode_header_refuses_a_small_buffer() {
   TEST_ASSERT_FALSE(encodeHeader(header, out, kHeaderSize - 1));
 }
 
+void test_encode_header_refuses_another_version() {
+  const Header header = {2, FrameType::Hello, 1, 1};
+  uint8_t out[kHeaderSize];
+  TEST_ASSERT_FALSE(encodeHeader(header, out, sizeof(out)));
+}
+
+void test_decode_header_accepts_trailing_bytes() {
+  const uint8_t frame[kHeaderSize + 4] = {0x01, 0x20, 1, 0, 0, 0, 2, 0, 0, 0, 0xAA, 0xBB, 0xCC, 0xDD};
+  Header header;
+  TEST_ASSERT_TRUE(decodeHeader(frame, sizeof(frame), &header));
+  TEST_ASSERT_EQUAL_UINT32(1, header.bootId);
+  TEST_ASSERT_EQUAL_UINT32(2, header.counter);
+}
+
 void test_encode_header_refuses_an_unknown_type() {
   const Header header = {kProtocolVersion, static_cast<FrameType>(0x99), 1, 1};
   uint8_t out[kHeaderSize];
@@ -209,6 +223,38 @@ void test_a_full_telemetry_frame_fits_one_esp_now_frame() {
   TEST_ASSERT_TRUE(kHeaderSize + size + kTagSize <= kMaxFrameSize);
 }
 
+void test_a_full_telemetry_payload_decodes() {
+  Sample samples[kMaxSamplesPerFrame];
+  for (size_t i = 0; i < kMaxSamplesPerFrame; i++) {
+    samples[i] = exampleSample();
+    samples[i].sampleSeq = static_cast<uint32_t>(i);
+  }
+  uint8_t out[kTelemetryPrefixSize + kMaxSamplesPerFrame * kSampleSize];
+  const size_t size = encodeTelemetryPayload(9, samples, kMaxSamplesPerFrame, out, sizeof(out));
+  Sample decoded[kMaxSamplesPerFrame];
+  uint32_t hubBootId = 0;
+  size_t count = 0;
+  TEST_ASSERT_TRUE(decodeTelemetryPayload(out, size, &hubBootId, decoded, kMaxSamplesPerFrame, &count));
+  TEST_ASSERT_EQUAL_UINT(kMaxSamplesPerFrame, count);
+  assertSampleEqual(samples[kMaxSamplesPerFrame - 1], decoded[kMaxSamplesPerFrame - 1]);
+}
+
+void test_decode_telemetry_refuses_a_payload_that_is_too_long_and_leaves_the_output_alone() {
+  Sample samples[1] = {exampleSample()};
+  uint8_t out[kTelemetryPrefixSize + kSampleSize + 1] = {0};
+  const size_t size = encodeTelemetryPayload(5, samples, 1, out, sizeof(out));
+  TEST_ASSERT_EQUAL_UINT(kTelemetryPrefixSize + kSampleSize, size);
+
+  Sample decoded[1];
+  memset(decoded, 0x5A, sizeof(decoded));
+  uint32_t hubBootId = 0x1234;
+  size_t count = 77;
+  TEST_ASSERT_FALSE(decodeTelemetryPayload(out, size + 1, &hubBootId, decoded, 1, &count));
+  TEST_ASSERT_EQUAL_UINT32(0x1234, hubBootId);
+  TEST_ASSERT_EQUAL_UINT(77, count);
+  TEST_ASSERT_EQUAL_UINT8(0x5A, reinterpret_cast<const uint8_t *>(decoded)[0]);
+}
+
 void test_encode_telemetry_refuses_a_bad_count_and_a_small_buffer() {
   Sample samples[kMaxSamplesPerFrame + 1];
   for (size_t i = 0; i < kMaxSamplesPerFrame + 1; i++) {
@@ -252,6 +298,8 @@ int main(int, char **) {
   RUN_TEST(test_header_round_trip);
   RUN_TEST(test_every_frame_type_of_the_table_is_known);
   RUN_TEST(test_encode_header_refuses_a_small_buffer);
+  RUN_TEST(test_encode_header_refuses_another_version);
+  RUN_TEST(test_decode_header_accepts_trailing_bytes);
   RUN_TEST(test_encode_header_refuses_an_unknown_type);
   RUN_TEST(test_decode_header_refuses_bad_input);
   RUN_TEST(test_nonce_layout);
@@ -263,6 +311,8 @@ int main(int, char **) {
   RUN_TEST(test_telemetry_payload_layout);
   RUN_TEST(test_telemetry_payload_round_trip);
   RUN_TEST(test_a_full_telemetry_frame_fits_one_esp_now_frame);
+  RUN_TEST(test_a_full_telemetry_payload_decodes);
+  RUN_TEST(test_decode_telemetry_refuses_a_payload_that_is_too_long_and_leaves_the_output_alone);
   RUN_TEST(test_encode_telemetry_refuses_a_bad_count_and_a_small_buffer);
   RUN_TEST(test_decode_telemetry_refuses_bad_input);
   return UNITY_END();

@@ -13,9 +13,24 @@ using namespace wattlink;
 namespace {
 
 // OpenSSL stands in for mbedTLS on the host, so the tests check the derivation and not the hash.
-void opensslHmac(void *, const uint8_t *key, size_t keyLength, const uint8_t *data, size_t dataLength, uint8_t out[kSha256Size]) {
+bool opensslHmac(void *, const uint8_t *key, size_t keyLength, const uint8_t *data, size_t dataLength, uint8_t out[kSha256Size]) {
   unsigned int outLength = 0;
-  HMAC(EVP_sha256(), key, static_cast<int>(keyLength), data, dataLength, out, &outLength);
+  return HMAC(EVP_sha256(), key, static_cast<int>(keyLength), data, dataLength, out, &outLength) != nullptr;
+}
+
+// Fails on the call whose number is stored in the context, to test that a failing hash fails the derivation.
+struct FailOnCall {
+  int failAt;
+  int calls;
+};
+
+bool failingHmac(void *context, const uint8_t *key, size_t keyLength, const uint8_t *data, size_t dataLength, uint8_t out[kSha256Size]) {
+  FailOnCall *state = static_cast<FailOnCall *>(context);
+  state->calls++;
+  if (state->calls == state->failAt) {
+    return false;
+  }
+  return opensslHmac(nullptr, key, keyLength, data, dataLength, out);
 }
 
 size_t fromHex(const char *hex, uint8_t *out) {
@@ -102,6 +117,50 @@ void test_an_empty_output_succeeds_and_writes_nothing() {
   TEST_ASSERT_EQUAL_UINT8(0xAA, okm[0]);
 }
 
+void test_the_callback_gets_the_context_and_is_called_once_for_the_extract_and_once_for_each_block() {
+  uint8_t ikm[22];
+  memset(ikm, 0x0b, sizeof(ikm));
+  uint8_t okm[42];
+  FailOnCall state = {0, 0};
+  TEST_ASSERT_TRUE(hkdfSha256(failingHmac, &state, nullptr, 0, ikm, sizeof(ikm), nullptr, 0, okm, sizeof(okm)));
+  TEST_ASSERT_EQUAL_INT(3, state.calls);
+}
+
+void test_a_failing_hash_fails_the_derivation_in_the_extract_and_in_every_block() {
+  uint8_t ikm[22];
+  memset(ikm, 0x0b, sizeof(ikm));
+  uint8_t okm[42];
+  for (int failAt = 1; failAt <= 3; failAt++) {
+    FailOnCall state = {failAt, 0};
+    TEST_ASSERT_FALSE(hkdfSha256(failingHmac, &state, nullptr, 0, ikm, sizeof(ikm), nullptr, 0, okm, sizeof(okm)));
+  }
+}
+
+void test_the_largest_output_has_the_reference_start_and_end() {
+  uint8_t ikm[22];
+  memset(ikm, 0x0b, sizeof(ikm));
+  static uint8_t okm[kMaxHkdfOutputSize];
+  TEST_ASSERT_TRUE(hkdfSha256(opensslHmac, nullptr, nullptr, 0, ikm, sizeof(ikm), nullptr, 0, okm, sizeof(okm)));
+  uint8_t start[16];
+  uint8_t end[16];
+  fromHex("8da4e775a563c18f715f802a063c5a31", start);
+  fromHex("de02634126d2e57f47aae9cd77993ea6", end);
+  TEST_ASSERT_EQUAL_UINT8_ARRAY(start, okm, sizeof(start));
+  TEST_ASSERT_EQUAL_UINT8_ARRAY(end, okm + sizeof(okm) - sizeof(end), sizeof(end));
+}
+
+void test_the_longest_info_gives_the_reference_value() {
+  uint8_t ikm[22];
+  memset(ikm, 0x0b, sizeof(ikm));
+  uint8_t info[kMaxHkdfInfoSize];
+  fillRange(info, sizeof(info), 0x00);
+  uint8_t expected[32];
+  fromHex("dabe125843201caf8fe0d040dcd5ca435721808296b608b70ab035205bd3b66b", expected);
+  uint8_t okm[32];
+  TEST_ASSERT_TRUE(hkdfSha256(opensslHmac, nullptr, nullptr, 0, ikm, sizeof(ikm), info, sizeof(info), okm, sizeof(okm)));
+  TEST_ASSERT_EQUAL_UINT8_ARRAY(expected, okm, sizeof(okm));
+}
+
 void test_the_limits_are_refused() {
   uint8_t ikm[1] = {1};
   uint8_t info[kMaxHkdfInfoSize + 1] = {0};
@@ -177,6 +236,13 @@ void test_one_set_bit_in_the_secret_is_enough() {
   TEST_ASSERT_TRUE(derivePairingKey(opensslHmac, nullptr, in.secret, in.nodeKey, in.hubKey, in.nodeMac, in.hubMac, key));
 }
 
+void test_a_failing_hash_fails_the_pairing_key() {
+  PairingInputs in;
+  uint8_t key[kPairingKeySize];
+  FailOnCall state = {1, 0};
+  TEST_ASSERT_FALSE(derivePairingKey(failingHmac, &state, in.secret, in.nodeKey, in.hubKey, in.nodeMac, in.hubMac, key));
+}
+
 int main(int, char **) {
   UNITY_BEGIN();
   RUN_TEST(test_rfc5869_case_1);
@@ -184,11 +250,16 @@ int main(int, char **) {
   RUN_TEST(test_rfc5869_case_3);
   RUN_TEST(test_a_shorter_output_is_the_start_of_a_longer_one);
   RUN_TEST(test_an_empty_output_succeeds_and_writes_nothing);
+  RUN_TEST(test_the_callback_gets_the_context_and_is_called_once_for_the_extract_and_once_for_each_block);
+  RUN_TEST(test_a_failing_hash_fails_the_derivation_in_the_extract_and_in_every_block);
+  RUN_TEST(test_the_largest_output_has_the_reference_start_and_end);
+  RUN_TEST(test_the_longest_info_gives_the_reference_value);
   RUN_TEST(test_the_limits_are_refused);
   RUN_TEST(test_the_pairing_salt_is_the_sha256_of_the_protocol_text);
   RUN_TEST(test_the_pairing_key_matches_the_reference_value);
   RUN_TEST(test_the_order_of_the_keys_and_the_macs_matters);
   RUN_TEST(test_an_all_zero_shared_secret_is_refused);
   RUN_TEST(test_one_set_bit_in_the_secret_is_enough);
+  RUN_TEST(test_a_failing_hash_fails_the_pairing_key);
   return UNITY_END();
 }
