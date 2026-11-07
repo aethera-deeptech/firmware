@@ -1,6 +1,7 @@
 #include <Arduino.h>
 
 #include "config.h"
+#include "crypto-selftest.h"
 #include "hub-button.h"
 #include "nvs-store.h"
 #include "oled.h"
@@ -32,6 +33,8 @@ void setup() {
   char stored[96];
   settings.describe(stored, sizeof(stored));
   Serial.printf("Settings: %s\n", stored);
+  // The known answers of the host tests, run through the mbedTLS of the chip.
+  Serial.printf("Crypto self test: %s\n", wattlink::selfTestName(wattlink::runCryptoSelfTest()));
 }
 
 void loop() {
