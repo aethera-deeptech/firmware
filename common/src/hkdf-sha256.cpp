@@ -4,6 +4,18 @@
 
 namespace wattlink {
 
+namespace {
+
+// A plain memset on a buffer that is not read again can be removed by the optimizer, a write through a volatile pointer cannot.
+void wipe(void *data, size_t length) {
+  volatile uint8_t *bytes = static_cast<volatile uint8_t *>(data);
+  while (length-- > 0) {
+    *bytes++ = 0;
+  }
+}
+
+}  // namespace
+
 bool hkdfSha256(HmacSha256 hmac, void *context, const uint8_t *salt, size_t saltLength, const uint8_t *ikm, size_t ikmLength,
                 const uint8_t *info, size_t infoLength, uint8_t *okm, size_t okmLength) {
   if (infoLength > kMaxHkdfInfoSize || okmLength > kMaxHkdfOutputSize) {
@@ -16,8 +28,10 @@ bool hkdfSha256(HmacSha256 hmac, void *context, const uint8_t *salt, size_t salt
     saltLength = kSha256Size;
   }
 
+  // The pseudo random key and the blocks are as secret as the output, so they are wiped before the function returns.
   uint8_t prk[kSha256Size];
   if (!hmac(context, salt, saltLength, ikm, ikmLength, prk)) {
+    wipe(prk, sizeof(prk));
     return false;
   }
 
@@ -25,8 +39,9 @@ bool hkdfSha256(HmacSha256 hmac, void *context, const uint8_t *salt, size_t salt
   uint8_t previous[kSha256Size];
   size_t previousLength = 0;
   size_t produced = 0;
+  bool ok = true;
 
-  for (uint8_t counter = 1; produced < okmLength; counter++) {
+  for (uint8_t counter = 1; ok && produced < okmLength; counter++) {
     size_t length = 0;
     if (previousLength > 0) {
       memcpy(block, previous, previousLength);
@@ -39,7 +54,8 @@ bool hkdfSha256(HmacSha256 hmac, void *context, const uint8_t *salt, size_t salt
     block[length++] = counter;
 
     if (!hmac(context, prk, kSha256Size, block, length, previous)) {
-      return false;
+      ok = false;
+      break;
     }
     previousLength = kSha256Size;
 
@@ -47,7 +63,11 @@ bool hkdfSha256(HmacSha256 hmac, void *context, const uint8_t *salt, size_t salt
     memcpy(okm + produced, previous, take);
     produced += take;
   }
-  return true;
+
+  wipe(prk, sizeof(prk));
+  wipe(block, sizeof(block));
+  wipe(previous, sizeof(previous));
+  return ok;
 }
 
 }  // namespace wattlink
