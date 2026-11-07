@@ -89,9 +89,9 @@ The hub has one button. A short press opens the pairing window, and a hold of 3 
 - A press shorter than 50 ms is bounce and is ignored. The threshold is exactly 50 ms, measured from the first low reading to the first high reading, and a press of exactly 50 ms counts as a short press.
 - While the button is held, the portal starts as soon as 3 seconds have passed, without waiting for the release, and that press is marked as used.
 - When the button is released, the hub opens the pairing window only if the press lasted from 50 ms up to less than 3 seconds and was not already used by the portal. A long hold therefore never also opens the pairing window, and the window opens a moment after the finger lifts and not at the moment of the press.
-- A short press while the pairing window is open does nothing, so it never restarts the window or disturbs a pairing that is in progress.
+- A short press while the pairing window is open starts the 60 seconds again, so an owner who types slowly keeps the window. The press only moves the end time. It does not close the window, it does not disturb a pairing that is in progress, and it opens no second window.
 - Starting the portal closes the pairing window, and the hub ignores the button while the portal runs. What the portal does to the ESP-NOW link while it runs, and how it ends, belong to the firmware of the hub.
-- The display of the hub shows which action started, for example `PAIRING 60s` or `PORTAL`.
+- The display of the hub shows which action started, for example `PAIRING 60 dtk` with the seconds that are left, or `MODE SETUP` for the portal. The texts are in Indonesian and are kept in one file of the firmware.
 - The button is read only after the hub has finished starting. A button that is already pressed at that moment is ignored until the hub has seen it released, and presses are timed from the next press. This holds because the first test button of the hub is on a pin that the chip reads at reset to choose its boot mode, so a hold at power up never reaches the firmware there, and a hub that restarts by itself while the owner holds the button behaves the same way. The pin is one constant in the configuration of the firmware, so a later external button needs no other change.
 
 ## Order and repeats
