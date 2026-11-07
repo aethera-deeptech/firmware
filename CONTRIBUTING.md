@@ -6,7 +6,7 @@ Everyone who takes part in this project follows the [Code of Conduct](CODE_OF_CO
 
 ## Set up
 
-The firmware is built with PlatformIO. The repository has no device code yet, so there is nothing to build. When a device folder is added, this section says how to build and flash it. A board is only needed when you want to see a change work on hardware.
+The firmware is built with PlatformIO. The Hub is in `gateway/`, and the commands to build it and to run its host side tests are in the README. CI runs both on every pull request, so a board is only needed when you want to see a change work on hardware. Code that does not touch the hardware goes in a library under `gateway/lib/` with a test under `gateway/test/`, so it runs on the host.
 
 ## Making a change
 
