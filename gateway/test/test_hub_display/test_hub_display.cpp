@@ -33,55 +33,112 @@ void assertLinesFit(const Screen &screen) {
 void setUp() {}
 void tearDown() {}
 
-void test_the_setup_code_has_eight_digits_and_a_terminating_zero() {
-  const uint32_t values[] = {1234567, 7654321, 42, 99, 5, 0, 10, 19};
-  Script script = {values, 8, 0};
-  char code[kSetupCodeDigits + 1];
+void test_the_setup_code_has_twelve_symbols_of_the_alphabet() {
+  const uint32_t values[] = {5, 17, 400, 99, 7, 1000, 31, 62, 12345, 54321, 3, 4294967291u};
+  Script script = {values, 12, 0};
+  char code[kSetupCodeSize];
   TEST_ASSERT_TRUE(makeSetupCode(scripted, &script, code));
-  TEST_ASSERT_EQUAL_UINT(kSetupCodeDigits, strlen(code));
-  for (size_t i = 0; i < kSetupCodeDigits; i++) {
-    TEST_ASSERT_TRUE(code[i] >= '0' && code[i] <= '9');
+  TEST_ASSERT_EQUAL_UINT(kSetupCodeLength, strlen(code));
+  for (size_t i = 0; i < kSetupCodeLength; i++) {
+    TEST_ASSERT_NOT_NULL(strchr(kSetupCodeAlphabet, code[i]));
   }
 }
 
-void test_each_digit_is_the_last_digit_of_one_number() {
-  const uint32_t values[] = {1234567, 7654321, 42, 99, 5, 0, 10, 19};
-  Script script = {values, 8, 0};
-  char code[kSetupCodeDigits + 1];
+void test_the_alphabet_has_31_different_symbols_without_the_look_alikes() {
+  TEST_ASSERT_EQUAL_UINT(kSetupCodeAlphabetSize, strlen(kSetupCodeAlphabet));
+  for (size_t i = 0; i < kSetupCodeAlphabetSize; i++) {
+    TEST_ASSERT_NULL(strchr(kSetupCodeAlphabet + i + 1, kSetupCodeAlphabet[i]));
+  }
+  TEST_ASSERT_NULL(strpbrk(kSetupCodeAlphabet, "0O1IL"));
+  TEST_ASSERT_NULL(strpbrk(kSetupCodeAlphabet, "abcdefghijklmnopqrstuvwxyz-"));
+}
+
+void test_each_symbol_is_picked_by_the_remainder_of_the_number() {
+  const uint32_t values[] = {0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11};
+  Script script = {values, 12, 0};
+  char code[kSetupCodeSize];
   TEST_ASSERT_TRUE(makeSetupCode(scripted, &script, code));
-  TEST_ASSERT_EQUAL_STRING("71295009", code);
-  TEST_ASSERT_EQUAL_UINT(8, script.next);
+  TEST_ASSERT_EQUAL_STRING("ABCDEFGHJKMN", code);
+}
+
+void test_the_remainder_wraps_at_the_alphabet_size() {
+  const uint32_t values[] = {31, 61, 62, 93, 30, 0, 1, 2, 3, 4, 5, 6};
+  Script script = {values, 12, 0};
+  char code[kSetupCodeSize];
+  TEST_ASSERT_TRUE(makeSetupCode(scripted, &script, code));
+  TEST_ASSERT_EQUAL_STRING("A9AA9ABCDEFG", code);
 }
 
 void test_a_number_at_the_limit_is_drawn_again() {
-  // 4294967290 is the largest multiple of 10 that fits in 32 bits, so it and everything above it must be skipped.
-  const uint32_t values[] = {4294967290u, 4294967295u, 4294967291u, 1, 2, 3, 4, 5, 6, 7, 8};
-  Script script = {values, 11, 0};
-  char code[kSetupCodeDigits + 1];
+  // 4294967292 is the largest multiple of 31 that fits in 32 bits, so it and everything above it must be skipped.
+  const uint32_t values[] = {4294967292u, 4294967295u, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11};
+  Script script = {values, 14, 0};
+  char code[kSetupCodeSize];
   TEST_ASSERT_TRUE(makeSetupCode(scripted, &script, code));
-  TEST_ASSERT_EQUAL_STRING("12345678", code);
-  TEST_ASSERT_EQUAL_UINT(11, script.next);
+  TEST_ASSERT_EQUAL_STRING("ABCDEFGHJKMN", code);
+  TEST_ASSERT_EQUAL_UINT(14, script.next);
 }
 
-void test_the_largest_accepted_number_gives_the_digit_9() {
-  const uint32_t values[] = {4294967289u};
+void test_the_largest_accepted_number_gives_the_last_symbol() {
+  const uint32_t values[] = {4294967291u};
   Script script = {values, 1, 0};
-  char code[kSetupCodeDigits + 1];
+  char code[kSetupCodeSize];
   TEST_ASSERT_TRUE(makeSetupCode(scripted, &script, code));
-  TEST_ASSERT_EQUAL_STRING("99999999", code);
-  TEST_ASSERT_EQUAL_UINT(8, script.next);
+  TEST_ASSERT_EQUAL_STRING("999999999999", code);
+  TEST_ASSERT_EQUAL_UINT(kSetupCodeLength, script.next);
 }
 
-void test_different_random_numbers_give_a_different_code() {
-  const uint32_t first[] = {1, 2, 3, 4, 5, 6, 7, 8};
-  const uint32_t second[] = {8, 7, 6, 5, 4, 3, 2, 1};
-  Script scriptA = {first, 8, 0};
-  Script scriptB = {second, 8, 0};
-  char a[kSetupCodeDigits + 1];
-  char b[kSetupCodeDigits + 1];
-  TEST_ASSERT_TRUE(makeSetupCode(scripted, &scriptA, a));
-  TEST_ASSERT_TRUE(makeSetupCode(scripted, &scriptB, b));
-  TEST_ASSERT_NOT_EQUAL(0, strcmp(a, b));
+void test_two_calls_with_one_source_give_two_codes() {
+  uint32_t values[24];
+  for (uint32_t i = 0; i < 24; i++) {
+    values[i] = i * 7;
+  }
+  Script script = {values, 24, 0};
+  char first[kSetupCodeSize];
+  char second[kSetupCodeSize];
+  TEST_ASSERT_TRUE(makeSetupCode(scripted, &script, first));
+  TEST_ASSERT_TRUE(makeSetupCode(scripted, &script, second));
+  TEST_ASSERT_NOT_EQUAL(0, strcmp(first, second));
+}
+
+void test_a_stuck_source_fails_and_leaves_an_empty_code() {
+  const uint32_t values[] = {4294967295u};
+  Script script = {values, 1, 0};
+  char code[kSetupCodeSize];
+  memset(code, 'x', sizeof(code));
+  TEST_ASSERT_FALSE(makeSetupCode(scripted, &script, code));
+  TEST_ASSERT_EQUAL_UINT(0, strlen(code));
+  TEST_ASSERT_EQUAL_UINT(kMaxRejectedDraws, script.next);
+}
+
+void test_the_code_does_not_write_past_its_buffer() {
+  const uint32_t values[] = {1, 2, 3, 4, 5, 6, 7, 8};
+  Script script = {values, 8, 0};
+  char buffer[kSetupCodeSize + 1];
+  buffer[kSetupCodeSize] = 0x5A;
+  TEST_ASSERT_TRUE(makeSetupCode(scripted, &script, buffer));
+  TEST_ASSERT_EQUAL_UINT8(0x5A, static_cast<uint8_t>(buffer[kSetupCodeSize]));
+}
+
+void test_the_code_is_shown_in_groups_of_four() {
+  char shown[kSetupCodeShownSize];
+  formatSetupCode("ABCDEFGHJKMN", shown);
+  TEST_ASSERT_EQUAL_STRING("ABCD-EFGH-JKMN", shown);
+  TEST_ASSERT_EQUAL_UINT(14, strlen(shown));
+}
+
+void test_the_shown_code_handles_short_long_and_missing_text() {
+  char shown[kSetupCodeShownSize];
+  formatSetupCode("ABCDEF", shown);
+  TEST_ASSERT_EQUAL_STRING("ABCD-EF", shown);
+  formatSetupCode("ABCD", shown);
+  TEST_ASSERT_EQUAL_STRING("ABCD", shown);
+  formatSetupCode("", shown);
+  TEST_ASSERT_EQUAL_STRING("", shown);
+  formatSetupCode(nullptr, shown);
+  TEST_ASSERT_EQUAL_STRING("", shown);
+  formatSetupCode("ABCDEFGHJKMNPQRSTUV", shown);
+  TEST_ASSERT_EQUAL_STRING("ABCD-EFGH-JKMN", shown);
 }
 
 void test_the_network_name_uses_the_last_two_bytes_in_upper_case() {
@@ -109,12 +166,13 @@ void test_the_boot_screen() {
 }
 
 void test_the_portal_screen_shows_the_network_and_the_code() {
-  const Screen screen = portalScreen("WATTLINK-E084", "12345678");
-  TEST_ASSERT_EQUAL_UINT8(4, screen.count);
+  const Screen screen = portalScreen("WATTLINK-E084", "ABCDEFGHJKMN");
+  TEST_ASSERT_EQUAL_UINT8(5, screen.count);
   TEST_ASSERT_EQUAL_STRING("MODE SETUP", screen.line[0]);
   TEST_ASSERT_EQUAL_STRING("Wi-Fi: WATTLINK-E084", screen.line[1]);
-  TEST_ASSERT_EQUAL_STRING("Kode: 12345678", screen.line[2]);
+  TEST_ASSERT_EQUAL_STRING("Kode: ABCD-EFGH-JKMN", screen.line[2]);
   TEST_ASSERT_EQUAL_STRING("Buka 192.168.4.1", screen.line[3]);
+  TEST_ASSERT_EQUAL_STRING("Ketik tanpa tanda -", screen.line[4]);
   assertLinesFit(screen);
 }
 
@@ -172,36 +230,6 @@ void test_no_screen_has_more_lines_than_the_display_can_show() {
   TEST_ASSERT_TRUE(statusScreen(true, true, 1, 1).count <= kMaxScreenLines);
 }
 
-void test_two_calls_with_one_source_give_two_codes() {
-  const uint32_t values[] = {1, 2, 3, 4, 5, 6, 7, 8, 9, 0, 9, 8, 7, 6, 5, 4};
-  Script script = {values, 16, 0};
-  char first[kSetupCodeDigits + 1];
-  char second[kSetupCodeDigits + 1];
-  TEST_ASSERT_TRUE(makeSetupCode(scripted, &script, first));
-  TEST_ASSERT_TRUE(makeSetupCode(scripted, &script, second));
-  TEST_ASSERT_EQUAL_STRING("12345678", first);
-  TEST_ASSERT_EQUAL_STRING("90987654", second);
-}
-
-void test_a_stuck_source_fails_and_leaves_an_empty_code() {
-  const uint32_t values[] = {4294967295u};
-  Script script = {values, 1, 0};
-  char code[kSetupCodeDigits + 1];
-  memset(code, 'x', sizeof(code));
-  TEST_ASSERT_FALSE(makeSetupCode(scripted, &script, code));
-  TEST_ASSERT_EQUAL_UINT(0, strlen(code));
-  TEST_ASSERT_EQUAL_UINT(kMaxRejectedDraws, script.next);
-}
-
-void test_the_code_does_not_write_past_its_buffer() {
-  const uint32_t values[] = {1, 2, 3, 4, 5, 6, 7, 8};
-  Script script = {values, 8, 0};
-  char buffer[kSetupCodeDigits + 2];
-  buffer[kSetupCodeDigits + 1] = 0x5A;
-  TEST_ASSERT_TRUE(makeSetupCode(scripted, &script, buffer));
-  TEST_ASSERT_EQUAL_UINT8(0x5A, static_cast<uint8_t>(buffer[kSetupCodeDigits + 1]));
-}
-
 void test_the_first_four_bytes_of_the_mac_do_not_change_the_network_name() {
   const uint8_t a[6] = {1, 2, 3, 4, 0xAB, 0xCD};
   const uint8_t b[6] = {9, 8, 7, 6, 0xAB, 0xCD};
@@ -231,17 +259,20 @@ void test_a_missing_text_shows_as_empty_and_a_long_version_is_cut() {
 
 int main(int, char **) {
   UNITY_BEGIN();
-  RUN_TEST(test_the_setup_code_has_eight_digits_and_a_terminating_zero);
-  RUN_TEST(test_each_digit_is_the_last_digit_of_one_number);
-  RUN_TEST(test_a_number_at_the_limit_is_drawn_again);
-  RUN_TEST(test_the_largest_accepted_number_gives_the_digit_9);
-  RUN_TEST(test_different_random_numbers_give_a_different_code);
-  RUN_TEST(test_two_calls_with_one_source_give_two_codes);
-  RUN_TEST(test_a_stuck_source_fails_and_leaves_an_empty_code);
-  RUN_TEST(test_the_code_does_not_write_past_its_buffer);
   RUN_TEST(test_the_first_four_bytes_of_the_mac_do_not_change_the_network_name);
   RUN_TEST(test_the_pairing_countdown_is_capped_to_keep_the_line_width);
   RUN_TEST(test_a_missing_text_shows_as_empty_and_a_long_version_is_cut);
+  RUN_TEST(test_the_setup_code_has_twelve_symbols_of_the_alphabet);
+  RUN_TEST(test_the_alphabet_has_31_different_symbols_without_the_look_alikes);
+  RUN_TEST(test_each_symbol_is_picked_by_the_remainder_of_the_number);
+  RUN_TEST(test_the_remainder_wraps_at_the_alphabet_size);
+  RUN_TEST(test_a_number_at_the_limit_is_drawn_again);
+  RUN_TEST(test_the_largest_accepted_number_gives_the_last_symbol);
+  RUN_TEST(test_two_calls_with_one_source_give_two_codes);
+  RUN_TEST(test_a_stuck_source_fails_and_leaves_an_empty_code);
+  RUN_TEST(test_the_code_does_not_write_past_its_buffer);
+  RUN_TEST(test_the_code_is_shown_in_groups_of_four);
+  RUN_TEST(test_the_shown_code_handles_short_long_and_missing_text);
   RUN_TEST(test_the_network_name_uses_the_last_two_bytes_in_upper_case);
   RUN_TEST(test_the_network_name_keeps_leading_zeros);
   RUN_TEST(test_the_boot_screen);
