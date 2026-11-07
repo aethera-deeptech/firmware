@@ -1,7 +1,7 @@
 {
   "name": "wattlink-common",
   "version": "0.1.0",
-  "description": "The frames, the nonce and the key derivation that the hub and the nodes share",
+  "description": "The frames, their payloads, the sealing of the encrypted frames, the nonce and the key derivation that the hub and the nodes share",
   "frameworks": "*",
   "platforms": "*"
 }
