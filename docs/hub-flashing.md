@@ -24,16 +24,16 @@ The offsets follow `gateway/partitions.csv`. The table has the NVS at `0x9000` w
    gh run download <run id> --repo aethera-deeptech/firmware --name hub-flash --dir hub-flash
    ```
 
-2. Optional but advised when the board runs other firmware. Save the whole flash first, which takes a few minutes. Use a new folder name for each board and after each failed try, because the command stops when the folder exists, and that keeps one backup from replacing another. The backup holds the NVS of the board, so it can hold a Wi-Fi password and keys, and it must stay private. Write it into a folder that only you can open, and treat the file like a password.
+2. Optional but advised when the board runs other firmware. Save the whole flash first, which takes a few minutes. Pick a new folder name for each board and after each failed try, for example `hub-backup-1`, and use the same name in both commands below. The command stops when the folder exists, and that keeps one backup from replacing another. The backup holds the NVS of the board, so it can hold a Wi-Fi password and keys, and it must stay private. Write it into a folder that only you can open, and treat the file like a password.
 
    ```sh
-   mkdir -m 700 hub-backup && python -m esptool --chip esp32 --port /dev/ttyUSB0 --baud 460800 read_flash 0 ALL hub-backup/hub-backup.bin
+   mkdir -m 700 <backup folder> && python -m esptool --chip esp32 --port /dev/ttyUSB0 --baud 460800 read_flash 0 ALL <backup folder>/hub-backup.bin
    ```
 
-   Step 3 changes folder, so go back to the folder that holds `hub-backup` to put the backup back.
+   Step 3 changes folder, so go back to the folder that holds the backup folder to put the backup back.
 
    ```sh
-   python -m esptool --chip esp32 --port /dev/ttyUSB0 --baud 460800 write_flash 0 hub-backup/hub-backup.bin
+   python -m esptool --chip esp32 --port /dev/ttyUSB0 --baud 460800 write_flash 0 <backup folder>/hub-backup.bin
    ```
 
 3. Write the four files.
