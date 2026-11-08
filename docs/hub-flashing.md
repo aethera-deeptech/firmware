@@ -13,7 +13,7 @@ Use only the artifact of a run on `main`, or of a pull request that you have rea
 | `boot_app0.bin` | `0xe000` |
 | `firmware.bin` | `0x10000` |
 
-The offsets follow `gateway/partitions.csv`. The table has the NVS at `0x9000` with a size of `0x5000`, the OTA data at `0xe000`, and two app slots of `0x1F0000` at `0x10000` and `0x200000`. The hub needs a flash chip of 4 MB.
+The offsets follow `gateway/partitions.csv`. The table has the NVS at `0x9000` with a size of `0x5000`, the OTA data at `0xe000`, two app slots of `0x1F0000` at `0x10000` and `0x200000`, and a core dump area of `0x10000` at `0x3F0000`. The hub needs a flash chip of 4 MB.
 
 ## Steps
 
