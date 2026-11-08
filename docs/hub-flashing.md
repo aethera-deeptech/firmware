@@ -1,6 +1,6 @@
 # Flashing the hub from a CI build
 
-The Firmware workflow builds the hub on every run and keeps the four files that the chip needs for 14 days, as the artifact `hub-flash` of that run. This page says how to put those files on a hub board without installing PlatformIO. It needs Python with `esptool`, and the GitHub CLI with a login (`gh auth login`) to download the files.
+The Firmware workflow builds the hub on every run and keeps the four files that the chip needs for 14 days, as the artifact `hub-flash` of that run. This page says how to put those files on a hub board without installing PlatformIO. It needs Python with `esptool` 4.6 or newer, and the GitHub CLI with a login (`gh auth login`) to download the files.
 
 Use only the artifact of a run on `main`, or of a pull request that you have read. The artifact is a program that runs on your board, and a run from an unreviewed branch can hold anything.
 
@@ -24,7 +24,7 @@ The offsets follow `gateway/partitions.csv`. The table has the NVS at `0x9000` w
    gh run download <run id> --repo aethera-deeptech/firmware --name hub-flash --dir hub-flash
    ```
 
-2. Optional but advised when the board runs other firmware. Save the whole flash first, which takes a few minutes. Use a new folder name for each board, because the command stops when the folder exists, and that keeps one backup from replacing another. The backup holds the NVS of the board, so it can hold a Wi-Fi password and keys, and it must stay private. Write it into a folder that only you can open, and treat the file like a password.
+2. Optional but advised when the board runs other firmware. Save the whole flash first, which takes a few minutes. Use a new folder name for each board and after each failed try, because the command stops when the folder exists, and that keeps one backup from replacing another. The backup holds the NVS of the board, so it can hold a Wi-Fi password and keys, and it must stay private. Write it into a folder that only you can open, and treat the file like a password.
 
    ```sh
    mkdir -m 700 hub-backup && python -m esptool --chip esp32 --port /dev/ttyUSB0 --baud 460800 read_flash 0 ALL hub-backup/hub-backup.bin
