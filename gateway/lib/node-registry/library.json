@@ -1,0 +1,7 @@
+{
+  "name": "node-registry",
+  "version": "0.1.0",
+  "description": "The nodes that the hub has paired, with their keys, their boot counters and the ids that the backend has seen",
+  "frameworks": "*",
+  "platforms": "*"
+}
