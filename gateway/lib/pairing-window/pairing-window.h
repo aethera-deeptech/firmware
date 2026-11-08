@@ -9,7 +9,7 @@ constexpr uint32_t kPairingWindowMs = 60000;
 
 // After a PAIR_REQUEST, the hub waits this long for the first TELEMETRY frame that proves the new key, or until the window ends if that
 // comes first. When the frame does not arrive, nothing is committed and the window is closed, so the owner pairs again.
-constexpr uint32_t kPairingPendingMs = 15000;
+constexpr uint32_t kPairingPendingMs = 30000;
 
 enum class WindowState : uint8_t {
   Closed,

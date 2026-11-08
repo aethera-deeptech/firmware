@@ -21,7 +21,7 @@ void tearDown() {}
 
 void test_the_limits_are_the_documented_ones() {
   TEST_ASSERT_EQUAL_UINT32(60000, kPairingWindowMs);
-  TEST_ASSERT_EQUAL_UINT32(15000, kPairingPendingMs);
+  TEST_ASSERT_EQUAL_UINT32(30000, kPairingPendingMs);
 }
 
 void test_a_new_window_is_closed() {
