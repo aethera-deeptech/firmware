@@ -38,6 +38,7 @@ The pins and the version are constants in `gateway/src/config.h`. The only setti
 - [docs/espnow-protocol.md](docs/espnow-protocol.md) describes the frames between the nodes and the hub.
 - [CONTRIBUTING.md](CONTRIBUTING.md) explains how to make a change.
 - [docs/ci-cd.md](docs/ci-cd.md) lists every workflow and every required check.
+- [docs/hub-flashing.md](docs/hub-flashing.md) says how to put a CI build on a hub board without installing PlatformIO.
 - [SECURITY.md](SECURITY.md) says how to report a vulnerability.
 
 ## Project layout
