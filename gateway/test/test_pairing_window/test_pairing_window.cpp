@@ -199,6 +199,21 @@ void test_no_seconds_are_left_while_a_pairing_is_in_progress() {
   TEST_ASSERT_EQUAL_INT(static_cast<int>(WindowState::Closed), static_cast<int>(window.update(1000 + kPairingPendingMs)));
 }
 
+void test_the_cap_starts_to_apply_after_thirty_seconds_into_the_window() {
+  // A request at 30000 ms still gets the full 30 seconds, because that ends exactly with the window. One millisecond later it is cut short.
+  PairingWindow early;
+  early.press(0);
+  TEST_ASSERT_TRUE(early.beginPairing(kPairingWindowMs - kPairingPendingMs));
+  TEST_ASSERT_TRUE(early.isPairing(kPairingWindowMs - 1));
+  TEST_ASSERT_FALSE(early.isPairing(kPairingWindowMs));
+
+  PairingWindow late;
+  late.press(0);
+  TEST_ASSERT_TRUE(late.beginPairing(kPairingWindowMs - kPairingPendingMs + 1));
+  TEST_ASSERT_TRUE(late.isPairing(kPairingWindowMs - 1));
+  TEST_ASSERT_FALSE(late.isPairing(kPairingWindowMs));
+}
+
 int main(int, char **) {
   UNITY_BEGIN();
   RUN_TEST(test_the_limits_are_the_documented_ones);
@@ -220,5 +235,6 @@ int main(int, char **) {
   RUN_TEST(test_the_pending_time_is_capped_at_the_window_end_across_the_wrap);
   RUN_TEST(test_the_pending_time_crosses_the_wrap);
   RUN_TEST(test_no_seconds_are_left_while_a_pairing_is_in_progress);
+  RUN_TEST(test_the_cap_starts_to_apply_after_thirty_seconds_into_the_window);
   return UNITY_END();
 }

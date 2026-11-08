@@ -36,13 +36,14 @@ enum class FrameCheck : uint8_t {
   StoreFailed,  // a new boot could not be written to flash, so the frame is dropped
 };
 
+// Writes the id for the backend, for example PLUG-A1B2C3, and a terminating zero. Returns false for a kind that is not a plug or a clamp, and
+// then out holds an empty text. The id does not depend on the registry, so the hub can show it while a node asks to pair. It does not check the
+// MAC, so the hub calls canPair() first.
+bool makeNodeId(uint8_t kind, const uint8_t mac[kMacSize], char out[kNodeIdSize]);
+
 // The ids that the hub reported to the backend, and the pairings. Removing a node forgets its pairing and keeps its id, because the backend counts
 // every different id of a gateway for ever. The class does the logic only, so the same code runs on the host in the tests and on the chip.
 // One task must call all of it. Keys are kept in RAM while the hub runs and are wiped when a pairing ends.
-// Writes the id for the backend, for example PLUG-A1B2C3, and a terminating zero. Returns false for a kind that is not a plug or a clamp.
-// The id does not depend on the registry, so the hub can show it while a node asks to pair.
-bool makeNodeId(uint8_t kind, const uint8_t mac[kMacSize], char out[kNodeIdSize]);
-
 class NodeRegistry {
  public:
   explicit NodeRegistry(RecordStore &store) : store_(store) {}

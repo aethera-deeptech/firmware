@@ -598,6 +598,69 @@ void test_the_id_can_be_made_before_the_node_is_paired() {
   TEST_ASSERT_FALSE(makeNodeId(3, kMacA, id));
 }
 
+void test_can_pair_and_pair_agree_in_every_case() {
+  const uint8_t zero[kMacSize] = {0};
+  const uint8_t sameEnd[kMacSize] = {0x40, 0x11, 0x22, 0x3c, 0x5a, 0xa4};
+  struct Case {
+    uint8_t kind;
+    const uint8_t *mac;
+  };
+  const Case cases[] = {{0, kMacA}, {kKindPlug, zero}, {kKindPlug, kMacA}, {kKindClamp, kMacA}, {kKindPlug, sameEnd}, {kKindClamp, sameEnd}, {kKindClamp, kMacB}};
+  for (const Case &item : cases) {
+    // Two registries in the same state, one asked and one told to pair, must give the same answer.
+    FakeStore askedStore;
+    FakeStore toldStore;
+    NodeRegistry asked(askedStore);
+    NodeRegistry told(toldStore);
+    asked.pair(kKindPlug, kMacA, kKeyA);
+    told.pair(kKindPlug, kMacA, kKeyA);
+    TEST_ASSERT_EQUAL_INT(result(told.pair(item.kind, item.mac, kKeyB)), result(asked.canPair(item.kind, item.mac)));
+  }
+  // The same for a removed node and for a full registry.
+  FakeStore store;
+  NodeRegistry registry(store);
+  registry.pair(kKindPlug, kMacA, kKeyA);
+  registry.unpair(kMacA);
+  TEST_ASSERT_EQUAL_INT(result(PairResult::Ok), result(registry.canPair(kKindPlug, kMacA)));
+  TEST_ASSERT_EQUAL_INT(result(PairResult::Ok), result(registry.pair(kKindPlug, kMacA, kKeyB)));
+}
+
+void test_can_pair_sees_a_removed_node_of_another_kind_as_a_taken_id() {
+  FakeStore store;
+  NodeRegistry registry(store);
+  registry.pair(kKindPlug, kMacA, kKeyA);
+  registry.unpair(kMacA);
+  const uint8_t sameEnd[kMacSize] = {0x40, 0x11, 0x22, 0x3c, 0x5a, 0xa4};
+  TEST_ASSERT_EQUAL_INT(result(PairResult::IdTaken), result(registry.canPair(kKindPlug, sameEnd)));
+  TEST_ASSERT_EQUAL_INT(result(PairResult::Ok), result(registry.canPair(kKindClamp, sameEnd)));
+}
+
+void test_a_damaged_slot_counts_as_used_for_can_pair() {
+  FakeStore store;
+  uint8_t mac[kMacSize];
+  for (size_t i = 0; i < kMaxNodes; i++) {
+    store.present[i] = true;
+    store.data[i][0] = 99;
+  }
+  NodeRegistry registry(store);
+  TEST_ASSERT_EQUAL_UINT(0, registry.load());
+  TEST_ASSERT_EQUAL_UINT(kMaxNodes, registry.damagedCount());
+  makeMac(mac, 1);
+  TEST_ASSERT_EQUAL_INT(result(PairResult::RegistryFull), result(registry.canPair(kKindPlug, mac)));
+}
+
+void test_the_longest_id_is_made_without_a_registry_and_an_invalid_kind_gives_an_empty_text() {
+  const uint8_t mac[kMacSize] = {0x40, 0, 0, 0xA1, 0xB2, 0xC3};
+  char id[kNodeIdSize];
+  memset(id, 'x', sizeof(id));
+  TEST_ASSERT_TRUE(makeNodeId(kKindClamp, mac, id));
+  TEST_ASSERT_EQUAL_STRING("CLAMP-A1B2C3", id);
+  TEST_ASSERT_EQUAL_UINT(12, strlen(id));
+  memset(id, 'x', sizeof(id));
+  TEST_ASSERT_FALSE(makeNodeId(3, mac, id));
+  TEST_ASSERT_EQUAL_STRING("", id);
+}
+
 int main(int, char **) {
   UNITY_BEGIN();
   RUN_TEST(test_the_limits_are_the_documented_ones);
@@ -632,6 +695,10 @@ int main(int, char **) {
   RUN_TEST(test_can_pair_says_what_pair_would_answer_and_changes_nothing);
   RUN_TEST(test_can_pair_says_ok_for_a_removed_node_and_full_for_a_full_registry);
   RUN_TEST(test_the_id_can_be_made_before_the_node_is_paired);
+  RUN_TEST(test_can_pair_and_pair_agree_in_every_case);
+  RUN_TEST(test_can_pair_sees_a_removed_node_of_another_kind_as_a_taken_id);
+  RUN_TEST(test_a_damaged_slot_counts_as_used_for_can_pair);
+  RUN_TEST(test_the_longest_id_is_made_without_a_registry_and_an_invalid_kind_gives_an_empty_text);
   RUN_TEST(test_a_boot_value_of_zero_is_never_accepted);
   RUN_TEST(test_the_highest_counter_and_boot_value_work_and_a_new_boot_starts_again);
   RUN_TEST(test_a_frame_of_a_node_that_was_removed_is_unknown);
