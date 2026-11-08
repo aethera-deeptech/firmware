@@ -700,7 +700,7 @@ int main(int, char **) {
   RUN_TEST(test_can_pair_says_ok_for_a_removed_node_and_full_for_a_full_registry);
   RUN_TEST(test_the_id_can_be_made_before_the_node_is_paired);
   RUN_TEST(test_can_pair_and_pair_agree_in_every_case);
-  RUN_TEST(test_can_pair_sees_a_removed_node_of_another_kind_as_a_taken_id);
+  RUN_TEST(test_can_pair_keeps_the_id_of_a_removed_node_taken_for_another_mac_of_the_same_kind);
   RUN_TEST(test_a_damaged_slot_counts_as_used_for_can_pair);
   RUN_TEST(test_the_longest_id_is_made_without_a_registry_and_an_invalid_kind_gives_an_empty_text);
   RUN_TEST(test_a_boot_value_of_zero_is_never_accepted);
