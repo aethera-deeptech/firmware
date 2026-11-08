@@ -51,9 +51,12 @@ jobs:
       - name: Upload the flash files of the hub
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: hub-flash-${{ github.sha }}
+          # The name is fixed because a run holds one artifact, and github.sha is the merge commit on a pull request, which nobody can look up.
+          # A rerun of all jobs replaces the artifact of the first attempt.
+          name: hub-flash
           path: hub-flash/
           retention-days: 14
+          overwrite: true
           if-no-files-found: error
 
   native-tests:
