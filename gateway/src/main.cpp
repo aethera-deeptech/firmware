@@ -3,8 +3,11 @@
 #include "config.h"
 #include "crypto-selftest.h"
 #include "hub-button.h"
+#include "node-registry.h"
+#include "nvs-record-store.h"
 #include "nvs-store.h"
 #include "oled.h"
+#include "payloads.h"
 #include "pairing-window.h"
 #include "portal.h"
 #include "screen-text.h"
@@ -15,6 +18,12 @@ static wattlink::ButtonClassifier button;
 static wattlink::Oled oled;
 static wattlink::NvsKeyValueStore flash;
 static wattlink::SettingsStore settings(flash);
+static wattlink::NvsRecordStore nodeFlash;
+static wattlink::NodeRegistry nodes(nodeFlash);
+
+// The registry keeps the kind as a plain byte, and this ties it to the kinds of the frames.
+static_assert(static_cast<uint8_t>(wattlink::NodeKind::Plug) == wattlink::kKindPlug, "the plug kind of the registry matches the frames");
+static_assert(static_cast<uint8_t>(wattlink::NodeKind::Clamp) == wattlink::kKindClamp, "the clamp kind of the registry matches the frames");
 static wattlink::Portal portal(settings, oled);
 static wattlink::WifiClient wifi(settings);
 static wattlink::PairingWindow pairing;
@@ -83,6 +92,10 @@ void setup() {
   char stored[96];
   settings.describe(stored, sizeof(stored));
   Serial.printf("Settings: %s\n", stored);
+  // The registry says how many nodes are paired and how many ids the backend has counted. A damaged slot is named, and it is never reused.
+  nodes.load();
+  Serial.printf("Nodes: %u paired, %u of %u ids used, %u damaged\n", static_cast<unsigned>(nodes.pairedCount()),
+                static_cast<unsigned>(nodes.idCount()), static_cast<unsigned>(wattlink::kMaxNodes), static_cast<unsigned>(nodes.damagedCount()));
   // The known answers of the host tests, run through the mbedTLS of the chip.
   cryptoResult = wattlink::runCryptoSelfTest();
   Serial.printf("Crypto self test: %s\n", wattlink::selfTestName(cryptoResult));
