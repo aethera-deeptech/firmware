@@ -24,16 +24,17 @@ The offsets follow `gateway/partitions.csv`. The table has the NVS at `0x9000` w
    gh run download <run id> --repo aethera-deeptech/firmware --name hub-flash --dir hub-flash
    ```
 
-2. Optional but advised when the board runs other firmware. Save the whole flash of 4 MB first, which takes a few minutes. The backup holds the NVS of the board, so it can hold a Wi-Fi password and keys, and it must stay private. The backup stays in the folder where you ran the command, and step 3 changes folder, so go back to it to restore.
+2. Optional but advised when the board runs other firmware. Save the whole flash of 4 MB first, which takes a few minutes. The backup holds the NVS of the board, so it can hold a Wi-Fi password and keys, and it must stay private. Write it into a folder that only you can open, and treat the file like a password.
 
    ```sh
-   python -m esptool --chip esp32 --port /dev/ttyUSB0 --baud 460800 read_flash 0 0x400000 hub-backup.bin
+   mkdir -m 700 hub-backup
+   python -m esptool --chip esp32 --port /dev/ttyUSB0 --baud 460800 read_flash 0 0x400000 hub-backup/hub-backup.bin
    ```
 
-   To put the backup back, run this in the same folder.
+   Step 3 changes folder, so go back to the folder that holds `hub-backup` to put the backup back.
 
    ```sh
-   python -m esptool --chip esp32 --port /dev/ttyUSB0 --baud 460800 write_flash 0 hub-backup.bin
+   python -m esptool --chip esp32 --port /dev/ttyUSB0 --baud 460800 write_flash 0 hub-backup/hub-backup.bin
    ```
 
 3. Write the four files.
@@ -59,6 +60,6 @@ The offsets follow `gateway/partitions.csv`. The table has the NVS at `0x9000` w
 
 ## What the write changes
 
-- It replaces the bootloader, the partition table, the OTA data and the app. It does not erase the rest of the chip, so the NVS pages of earlier builds stay and the saved settings survive when the NVS partition starts at `0x9000`.
+- It replaces the bootloader, the partition table, the OTA data and the app. It does not erase the rest of the chip. The NVS partition of this build starts at `0x9000` and ends at `0xe000`, where the write of `boot_app0.bin` begins. Saved settings of an earlier build survive only when its NVS partition was not larger than that. An earlier partition that reached past `0xe000` loses its last pages, and the settings in them may be lost. The hub then shows that no Wi-Fi is saved, and the setup portal enters it again.
 - Other data in the second half of the flash, for example the file system of another firmware, is not erased by this command. The new table lists that area as the second app slot, so a later over the air update or a full erase destroys it. Copy files off the board first.
 - The first boot line starts with `WATTLINK hub` and the version, and it shows that the new build runs. The lines after it report the saved nodes, the saved settings and the crypto self test. A line about the Wi-Fi follows only when a network is saved, so a new board prints none. None of them shows a password or a key. The settings line does show the name of the saved Wi-Fi network, so look at the log before you paste it in a public place.
