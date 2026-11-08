@@ -581,6 +581,10 @@ void test_can_pair_says_ok_for_a_removed_node_and_full_for_a_full_registry() {
   }
   makeMac(mac, 1000);
   TEST_ASSERT_EQUAL_INT(result(PairResult::RegistryFull), result(registry.canPair(kKindPlug, mac)));
+  // The answer of pair() is the same, and it writes nothing.
+  const int writes = store.writes;
+  TEST_ASSERT_EQUAL_INT(result(PairResult::RegistryFull), result(registry.pair(kKindPlug, mac, kKeyA)));
+  TEST_ASSERT_EQUAL_INT(writes, store.writes);
   makeMac(mac, 7);
   registry.unpair(mac);
   TEST_ASSERT_EQUAL_INT(result(PairResult::Ok), result(registry.canPair(kKindPlug, mac)));
@@ -616,7 +620,7 @@ void test_can_pair_and_pair_agree_in_every_case() {
     told.pair(kKindPlug, kMacA, kKeyA);
     TEST_ASSERT_EQUAL_INT(result(told.pair(item.kind, item.mac, kKeyB)), result(asked.canPair(item.kind, item.mac)));
   }
-  // The same for a removed node and for a full registry.
+  // The same for a node that was removed. The full registry has its own test below.
   FakeStore store;
   NodeRegistry registry(store);
   registry.pair(kKindPlug, kMacA, kKeyA);
@@ -625,7 +629,7 @@ void test_can_pair_and_pair_agree_in_every_case() {
   TEST_ASSERT_EQUAL_INT(result(PairResult::Ok), result(registry.pair(kKindPlug, kMacA, kKeyB)));
 }
 
-void test_can_pair_sees_a_removed_node_of_another_kind_as_a_taken_id() {
+void test_can_pair_keeps_the_id_of_a_removed_node_taken_for_another_mac_of_the_same_kind() {
   FakeStore store;
   NodeRegistry registry(store);
   registry.pair(kKindPlug, kMacA, kKeyA);

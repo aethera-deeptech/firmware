@@ -200,12 +200,13 @@ void test_no_seconds_are_left_while_a_pairing_is_in_progress() {
 }
 
 void test_the_cap_starts_to_apply_after_thirty_seconds_into_the_window() {
-  // A request at 30000 ms still gets the full 30 seconds, because that ends exactly with the window. One millisecond later it is cut short.
+  // A request one second before the cap gets the full 30 seconds, so it ends at 59000 ms and not at the end of the window. This fails when the
+  // pending time is ignored. A request at 30001 ms is cut short to the end of the window.
   PairingWindow early;
   early.press(0);
-  TEST_ASSERT_TRUE(early.beginPairing(kPairingWindowMs - kPairingPendingMs));
-  TEST_ASSERT_TRUE(early.isPairing(kPairingWindowMs - 1));
-  TEST_ASSERT_FALSE(early.isPairing(kPairingWindowMs));
+  TEST_ASSERT_TRUE(early.beginPairing(kPairingWindowMs - kPairingPendingMs - 1000));
+  TEST_ASSERT_TRUE(early.isPairing(kPairingWindowMs - 1001));
+  TEST_ASSERT_FALSE(early.isPairing(kPairingWindowMs - 1000));
 
   PairingWindow late;
   late.press(0);
