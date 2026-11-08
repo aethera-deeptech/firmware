@@ -29,13 +29,13 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
-          python-version: "3.12"
+          python-version: "3.15"
 
       # The build downloads the platform and the Arduino core of the version that platformio.ini pins
       - name: Build the hub firmware
         env:
           # renovate: datasource=pypi depName=platformio
-          PLATFORMIO_VERSION: 6.1.19
+          PLATFORMIO_VERSION: 6.2.0
         run: |
           pip install "platformio==${PLATFORMIO_VERSION}"
           pio run --project-dir gateway --environment hub
@@ -55,12 +55,12 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
-          python-version: "3.12"
+          python-version: "3.15"
 
       - name: Install the tools
         env:
           # renovate: datasource=pypi depName=platformio
-          PLATFORMIO_VERSION: 6.1.19
+          PLATFORMIO_VERSION: 6.2.0
           # renovate: datasource=pypi depName=gcovr
           GCOVR_VERSION: "8.8"
         run: pip install "platformio==${PLATFORMIO_VERSION}" "gcovr==${GCOVR_VERSION}"
