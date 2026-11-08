@@ -35,7 +35,7 @@ jobs:
       - name: Build the hub firmware
         env:
           # renovate: datasource=pypi depName=platformio
-          PLATFORMIO_VERSION: 6.1.19
+          PLATFORMIO_VERSION: 6.2.0
         run: |
           pip install "platformio==${PLATFORMIO_VERSION}"
           pio run --project-dir gateway --environment hub
@@ -60,7 +60,7 @@ jobs:
       - name: Install the tools
         env:
           # renovate: datasource=pypi depName=platformio
-          PLATFORMIO_VERSION: 6.1.19
+          PLATFORMIO_VERSION: 6.2.0
           # renovate: datasource=pypi depName=gcovr
           GCOVR_VERSION: "8.8"
         run: pip install "platformio==${PLATFORMIO_VERSION}" "gcovr==${GCOVR_VERSION}"
