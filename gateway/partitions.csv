@@ -1,0 +1,8 @@
+# The hub has a 4 MB flash chip. This is the default table of the Arduino core without the SPIFFS and the core dump areas, so the two
+# app slots grow from 1.25 MB to about 1.94 MB each, which leaves room for the TLS client. Two slots keep a later over the air update possible.
+# The NVS and the OTA data stay where the tools expect them. The upload flashes boot_app0 at 0xe000, so a larger NVS would be overwritten.
+# Name,   Type, SubType, Offset,   Size,     Flags
+nvs,      data, nvs,     0x9000,   0x5000,
+otadata,  data, ota,     0xe000,   0x2000,
+app0,     app,  ota_0,   0x10000,  0x1F0000,
+app1,     app,  ota_1,   0x200000, 0x1F0000,
