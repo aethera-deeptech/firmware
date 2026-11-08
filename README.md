@@ -30,7 +30,7 @@ The Hub is the only device with firmware so far, in `gateway/`, and the code tha
 
 ## Configuration
 
-The Hub has no setting that its owner can change yet. The pins and the version are constants in `gateway/src/config.h`. The Hub gets the Wi-Fi settings of the building through a captive portal that is not built yet, so no password is stored in the repository.
+The Hub has no setting that its owner can change yet. The pins and the version are constants in `gateway/src/config.h`. The Hub gets the Wi-Fi settings of the building through a captive portal. The owner holds the button of the Hub for 3 seconds, joins the setup network that the display names with the code that it shows, and fills in a page. The Hub joins only Wi-Fi networks on 2.4 GHz, because the ESP32 has no 5 GHz radio, and the setup page says so. No password is stored in the repository.
 
 ## Documentation
 
