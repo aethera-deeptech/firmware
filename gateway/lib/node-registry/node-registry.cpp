@@ -129,31 +129,22 @@ size_t NodeRegistry::load() {
   return valid;
 }
 
-PairResult NodeRegistry::pair(uint8_t kind, const uint8_t mac[kMacSize], const uint8_t key[kNodeKeySize]) {
+PairResult NodeRegistry::plan(uint8_t kind, const uint8_t mac[kMacSize], int *reuse, int *fresh) const {
+  *reuse = -1;
+  *fresh = -1;
   if (!validKind(kind)) {
     return PairResult::InvalidKind;
   }
   if (!validMac(mac)) {
     return PairResult::InvalidMac;
   }
-
   if (findPaired(mac) >= 0) {
     return PairResult::AlreadyPaired;
   }
 
   const int known = findSlot(mac, kind);
   if (known >= 0) {
-    Slot &slot = slots_[known];
-    memcpy(slot.key, key, kNodeKeySize);
-    slot.paired = true;
-    slot.bootId = 0;
-    slot.haveCounter = false;
-    slot.counter = 0;
-    if (!persist(known)) {
-      wipe(slot.key, sizeof(slot.key));
-      slot.paired = false;
-      return PairResult::StoreFailed;
-    }
+    *reuse = known;
     return PairResult::Ok;
   }
 
@@ -164,18 +155,45 @@ PairResult NodeRegistry::pair(uint8_t kind, const uint8_t mac[kMacSize], const u
     }
   }
 
-  size_t freeIndex = kMaxNodes;
   for (size_t i = 0; i < kMaxNodes; i++) {
     if (slots_[i].state == kEmpty) {
-      freeIndex = i;
-      break;
+      *fresh = static_cast<int>(i);
+      return PairResult::Ok;
     }
   }
-  if (freeIndex == kMaxNodes) {
-    return PairResult::RegistryFull;
+  return PairResult::RegistryFull;
+}
+
+PairResult NodeRegistry::canPair(uint8_t kind, const uint8_t mac[kMacSize]) const {
+  int reuse;
+  int fresh;
+  return plan(kind, mac, &reuse, &fresh);
+}
+
+PairResult NodeRegistry::pair(uint8_t kind, const uint8_t mac[kMacSize], const uint8_t key[kNodeKeySize]) {
+  int reuse;
+  int fresh;
+  const PairResult planned = plan(kind, mac, &reuse, &fresh);
+  if (planned != PairResult::Ok) {
+    return planned;
   }
 
-  Slot &slot = slots_[freeIndex];
+  if (reuse >= 0) {
+    Slot &slot = slots_[reuse];
+    memcpy(slot.key, key, kNodeKeySize);
+    slot.paired = true;
+    slot.bootId = 0;
+    slot.haveCounter = false;
+    slot.counter = 0;
+    if (!persist(reuse)) {
+      wipe(slot.key, sizeof(slot.key));
+      slot.paired = false;
+      return PairResult::StoreFailed;
+    }
+    return PairResult::Ok;
+  }
+
+  Slot &slot = slots_[fresh];
   slot.state = kInUse;
   slot.kind = kind;
   slot.paired = true;
@@ -184,7 +202,7 @@ PairResult NodeRegistry::pair(uint8_t kind, const uint8_t mac[kMacSize], const u
   slot.bootId = 0;
   slot.haveCounter = false;
   slot.counter = 0;
-  if (!persist(freeIndex)) {
+  if (!persist(fresh)) {
     wipe(&slot, sizeof(slot));
     return PairResult::StoreFailed;
   }
@@ -227,14 +245,13 @@ const uint8_t *NodeRegistry::keyOf(const uint8_t mac[kMacSize]) const {
   return index >= 0 ? slots_[index].key : nullptr;
 }
 
-bool NodeRegistry::nodeId(const uint8_t mac[kMacSize], char out[kNodeIdSize]) const {
-  const int index = findPaired(mac);
-  if (index < 0) {
+bool makeNodeId(uint8_t kind, const uint8_t mac[kMacSize], char out[kNodeIdSize]) {
+  if (!validKind(kind)) {
     out[0] = '\0';
     return false;
   }
   static const char kHex[] = "0123456789ABCDEF";
-  const char *prefix = slots_[index].kind == kKindPlug ? "PLUG-" : "CLAMP-";
+  const char *prefix = kind == kKindPlug ? "PLUG-" : "CLAMP-";
   size_t length = 0;
   while (*prefix != '\0') {
     out[length++] = *prefix++;
@@ -245,6 +262,15 @@ bool NodeRegistry::nodeId(const uint8_t mac[kMacSize], char out[kNodeIdSize]) co
   }
   out[length] = '\0';
   return true;
+}
+
+bool NodeRegistry::nodeId(const uint8_t mac[kMacSize], char out[kNodeIdSize]) const {
+  const int index = findPaired(mac);
+  if (index < 0) {
+    out[0] = '\0';
+    return false;
+  }
+  return makeNodeId(slots_[index].kind, mac, out);
 }
 
 FrameCheck NodeRegistry::check(const uint8_t mac[kMacSize], uint32_t bootId, uint32_t counter) const {

@@ -36,6 +36,11 @@ enum class FrameCheck : uint8_t {
   StoreFailed,  // a new boot could not be written to flash, so the frame is dropped
 };
 
+// Writes the id for the backend, for example PLUG-A1B2C3, and a terminating zero. Returns false for a kind that is not a plug or a clamp, and
+// then out holds an empty text. The id does not depend on the registry, so the hub can show it while a node asks to pair. It does not check the
+// MAC, so the hub calls canPair() first.
+bool makeNodeId(uint8_t kind, const uint8_t mac[kMacSize], char out[kNodeIdSize]);
+
 // The ids that the hub reported to the backend, and the pairings. Removing a node forgets its pairing and keeps its id, because the backend counts
 // every different id of a gateway for ever. The class does the logic only, so the same code runs on the host in the tests and on the chip.
 // One task must call all of it. Keys are kept in RAM while the hub runs and are wiped when a pairing ends.
@@ -51,6 +56,10 @@ class NodeRegistry {
   // Pairs a node with a new key. A node that was removed before and pairs again as the same kind has the same id and uses its old slot, and its kept boot
   // value is forgotten. The same MAC as the other kind is a new id, so it takes a new slot.
   PairResult pair(uint8_t kind, const uint8_t mac[kMacSize], const uint8_t key[kNodeKeySize]);
+
+  // Says what pair() would answer, and changes nothing, so the hub can refuse a node that it knows before it sends PAIR_ACCEPT. It never
+  // answers StoreFailed, because only a real write can fail.
+  PairResult canPair(uint8_t kind, const uint8_t mac[kMacSize]) const;
 
   // Forgets the pairing of a node and wipes its key. The id keeps its slot. Returns false when no such node is paired or the flash refused the change.
   bool unpair(const uint8_t mac[kMacSize]);
@@ -90,6 +99,8 @@ class NodeRegistry {
   };
 
   int findSlot(const uint8_t mac[kMacSize], uint8_t kind) const;
+  // The checks that pair() and canPair() share. On Ok it names the slot to reuse, or the empty slot to take.
+  PairResult plan(uint8_t kind, const uint8_t mac[kMacSize], int *reuse, int *fresh) const;
   int findPaired(const uint8_t mac[kMacSize]) const;
   bool persist(size_t index);
 
