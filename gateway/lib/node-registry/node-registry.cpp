@@ -46,18 +46,23 @@ NodeRegistry::~NodeRegistry() {
   wipe(slots_, sizeof(slots_));
 }
 
-int NodeRegistry::find(const uint8_t mac[kMacSize]) const {
+int NodeRegistry::findSlot(const uint8_t mac[kMacSize], uint8_t kind) const {
   for (size_t i = 0; i < kMaxNodes; i++) {
-    if (slots_[i].state == kInUse && sameMac(slots_[i].mac, mac)) {
+    if (slots_[i].state == kInUse && slots_[i].kind == kind && sameMac(slots_[i].mac, mac)) {
       return static_cast<int>(i);
     }
   }
   return -1;
 }
 
+// At most one slot of a MAC is paired, because pair() refuses a MAC that is paired as any kind.
 int NodeRegistry::findPaired(const uint8_t mac[kMacSize]) const {
-  const int index = find(mac);
-  return index >= 0 && slots_[index].paired ? index : -1;
+  for (size_t i = 0; i < kMaxNodes; i++) {
+    if (slots_[i].state == kInUse && slots_[i].paired && sameMac(slots_[i].mac, mac)) {
+      return static_cast<int>(i);
+    }
+  }
+  return -1;
 }
 
 bool NodeRegistry::persist(size_t index) {
@@ -81,14 +86,30 @@ size_t NodeRegistry::load() {
   size_t valid = 0;
   for (size_t i = 0; i < kMaxNodes; i++) {
     uint8_t record[kRecordSize] = {};
-    const ReadResult read = store_.read(i, record);
+    ReadResult read = store_.read(i, record);
+    if (read == ReadResult::Failed) {
+      // A read can fail for a moment. One more try keeps a good record from being treated as damaged for this start.
+      read = store_.read(i, record);
+    }
     if (read == ReadResult::Missing) {
       continue;
     }
     Slot &slot = slots_[i];
     const bool understood = read == ReadResult::Ok && record[0] == kRecordVersion && validKind(record[kOffsetKind]) &&
                             record[kOffsetFlags] <= 1 && validMac(record + kOffsetMac);
-    if (!understood) {
+    // Two records with the same id, or two pairings of one MAC, cannot come from this class. The later one is left out as damaged.
+    bool duplicate = false;
+    if (understood) {
+      for (size_t j = 0; j < i && !duplicate; j++) {
+        if (slots_[j].state != kInUse) {
+          continue;
+        }
+        const bool sameId = slots_[j].kind == record[kOffsetKind] && memcmp(slots_[j].mac + 3, record + kOffsetMac + 3, 3) == 0;
+        const bool bothPaired = record[kOffsetFlags] == 1 && slots_[j].paired && sameMac(slots_[j].mac, record + kOffsetMac);
+        duplicate = sameId || bothPaired;
+      }
+    }
+    if (!understood || duplicate) {
       slot.state = kDamaged;
       wipe(record, sizeof(record));
       continue;
@@ -116,15 +137,13 @@ PairResult NodeRegistry::pair(uint8_t kind, const uint8_t mac[kMacSize], const u
     return PairResult::InvalidMac;
   }
 
-  const int known = find(mac);
+  if (findPaired(mac) >= 0) {
+    return PairResult::AlreadyPaired;
+  }
+
+  const int known = findSlot(mac, kind);
   if (known >= 0) {
     Slot &slot = slots_[known];
-    if (slot.paired) {
-      return PairResult::AlreadyPaired;
-    }
-    if (slot.kind != kind) {
-      return PairResult::KindMismatch;
-    }
     memcpy(slot.key, key, kNodeKeySize);
     slot.paired = true;
     slot.bootId = 0;
@@ -234,7 +253,8 @@ FrameCheck NodeRegistry::check(const uint8_t mac[kMacSize], uint32_t bootId, uin
     return FrameCheck::Unknown;
   }
   const Slot &slot = slots_[index];
-  if (bootId < slot.bootId) {
+  // A node starts at 1 and grows by 1 at every start, so 0 is not a real start.
+  if (bootId == 0 || bootId < slot.bootId) {
     return FrameCheck::Stale;
   }
   if (bootId == slot.bootId && slot.haveCounter && counter <= slot.counter) {

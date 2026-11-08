@@ -16,6 +16,10 @@ class FakeStore : public RecordStore {
     if (failReadSlot == static_cast<int>(slot)) {
       return ReadResult::Failed;
     }
+    if (failReadOnceSlot == static_cast<int>(slot)) {
+      failReadOnceSlot = -1;
+      return ReadResult::Failed;
+    }
     if (!present[slot]) {
       return ReadResult::Missing;
     }
@@ -36,6 +40,7 @@ class FakeStore : public RecordStore {
   bool present[kMaxNodes] = {};
   bool failWrites = false;
   int failReadSlot = -1;
+  int failReadOnceSlot = -1;
   int writes = 0;
 };
 
@@ -194,13 +199,25 @@ void test_a_removed_node_pairs_again_in_its_old_slot_with_a_clean_boot_value() {
   TEST_ASSERT_EQUAL_INT(check(FrameCheck::Accepted), check(registry.accept(kMacA, 1, 1)));
 }
 
-void test_a_removed_node_cannot_come_back_as_the_other_kind() {
+void test_a_removed_node_that_comes_back_as_the_other_kind_takes_a_new_slot() {
   FakeStore store;
   NodeRegistry registry(store);
   registry.pair(kKindPlug, kMacA, kKeyA);
   registry.unpair(kMacA);
-  TEST_ASSERT_EQUAL_INT(result(PairResult::KindMismatch), result(registry.pair(kKindClamp, kMacA, kKeyA)));
-  TEST_ASSERT_FALSE(registry.isPaired(kMacA));
+  TEST_ASSERT_EQUAL_INT(result(PairResult::Ok), result(registry.pair(kKindClamp, kMacA, kKeyB)));
+  TEST_ASSERT_EQUAL_UINT(2, registry.idCount());
+  TEST_ASSERT_EQUAL_UINT(1, registry.pairedCount());
+  TEST_ASSERT_EQUAL_UINT8(kKindClamp, registry.kindOf(kMacA));
+  TEST_ASSERT_EQUAL_UINT8_ARRAY(kKeyB, registry.keyOf(kMacA), kNodeKeySize);
+  char id[kNodeIdSize];
+  TEST_ASSERT_TRUE(registry.nodeId(kMacA, id));
+  TEST_ASSERT_EQUAL_STRING("CLAMP-3C5AA4", id);
+  // The other kind is then a node that is paired, so it cannot pair as the first kind.
+  TEST_ASSERT_EQUAL_INT(result(PairResult::AlreadyPaired), result(registry.pair(kKindPlug, kMacA, kKeyA)));
+  // Remove it, and it can go back to the first kind in the first slot.
+  TEST_ASSERT_TRUE(registry.unpair(kMacA));
+  TEST_ASSERT_EQUAL_INT(result(PairResult::Ok), result(registry.pair(kKindPlug, kMacA, kKeyA)));
+  TEST_ASSERT_EQUAL_UINT(2, registry.idCount());
 }
 
 void test_the_registry_is_full_after_64_ids_for_the_life_of_the_gateway() {
@@ -383,9 +400,6 @@ void test_every_kind_of_damage_is_found() {
   const uint8_t good[kRecordSize] = {1, 1, 1, 0x40, 0, 0, 1, 2, 3, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 0, 0, 0, 0};
   for (size_t byte : {static_cast<size_t>(0), static_cast<size_t>(1), static_cast<size_t>(2)}) {
     for (uint8_t bad : {static_cast<uint8_t>(0), static_cast<uint8_t>(3), static_cast<uint8_t>(0xFF)}) {
-      if (byte == 1 && (bad == 1 || bad == 2)) {
-        continue;
-      }
       FakeStore store;
       memcpy(store.data[0], good, kRecordSize);
       store.data[0][byte] = bad;
@@ -436,7 +450,7 @@ void test_a_stored_removed_node_has_no_key_or_boot_after_load() {
   TEST_ASSERT_EQUAL_INT(check(FrameCheck::Accepted), check(registry.accept(kMacA, 1, 0)));
 }
 
-void test_the_record_layout_matches_the_document() {
+void test_the_stored_record_has_the_layout_of_the_store() {
   FakeStore store;
   NodeRegistry registry(store);
   registry.pair(kKindClamp, kMacB, kKeyB);
@@ -444,6 +458,98 @@ void test_the_record_layout_matches_the_document() {
   const uint8_t expected[kRecordSize] = {1, 2, 1, 0x48, 0xe7, 0x29, 0xb6, 0xe0, 0x84, 0xA0, 0xA1, 0xA2, 0xA3, 0xA4, 0xA5, 0xA6,
                                          0xA7, 0xA8, 0xA9, 0xAA, 0xAB, 0xAC, 0xAD, 0xAE, 0xAF, 0x01, 0x02, 0x03, 0x04};
   TEST_ASSERT_EQUAL_UINT8_ARRAY(expected, store.data[0], kRecordSize);
+}
+
+void test_a_boot_value_of_zero_is_never_accepted() {
+  FakeStore store;
+  NodeRegistry registry(store);
+  registry.pair(kKindPlug, kMacA, kKeyA);
+  TEST_ASSERT_EQUAL_INT(check(FrameCheck::Stale), check(registry.check(kMacA, 0, 0)));
+  TEST_ASSERT_EQUAL_INT(check(FrameCheck::Stale), check(registry.accept(kMacA, 0, 5)));
+  TEST_ASSERT_EQUAL_INT(check(FrameCheck::Accepted), check(registry.accept(kMacA, 1, 0)));
+}
+
+void test_the_highest_counter_and_boot_value_work_and_a_new_boot_starts_again() {
+  FakeStore store;
+  NodeRegistry registry(store);
+  registry.pair(kKindPlug, kMacA, kKeyA);
+  TEST_ASSERT_EQUAL_INT(check(FrameCheck::Accepted), check(registry.accept(kMacA, 0xFFFFFFFFu, 0xFFFFFFFFu)));
+  TEST_ASSERT_EQUAL_INT(check(FrameCheck::Stale), check(registry.accept(kMacA, 0xFFFFFFFFu, 0xFFFFFFFFu)));
+  TEST_ASSERT_EQUAL_INT(check(FrameCheck::Stale), check(registry.accept(kMacA, 0xFFFFFFFEu, 1)));
+}
+
+void test_a_frame_of_a_node_that_was_removed_is_unknown() {
+  FakeStore store;
+  NodeRegistry registry(store);
+  registry.pair(kKindPlug, kMacA, kKeyA);
+  registry.unpair(kMacA);
+  TEST_ASSERT_EQUAL_INT(check(FrameCheck::Unknown), check(registry.accept(kMacA, 1, 1)));
+}
+
+void test_a_removed_record_with_a_key_left_in_it_gives_no_key_after_load() {
+  FakeStore store;
+  const uint8_t record[kRecordSize] = {1, 1, 0, 0x40, 0, 0, 1, 2, 3, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 7, 0, 0, 0};
+  memcpy(store.data[0], record, kRecordSize);
+  store.present[0] = true;
+  NodeRegistry registry(store);
+  TEST_ASSERT_EQUAL_UINT(1, registry.load());
+  const uint8_t mac[kMacSize] = {0x40, 0, 0, 1, 2, 3};
+  TEST_ASSERT_FALSE(registry.isPaired(mac));
+  TEST_ASSERT_NULL(registry.keyOf(mac));
+  TEST_ASSERT_EQUAL_INT(result(PairResult::Ok), result(registry.pair(kKindPlug, mac, kKeyA)));
+  TEST_ASSERT_EQUAL_UINT8_ARRAY(kKeyA, registry.keyOf(mac), kNodeKeySize);
+  // The boot value 7 that was left in the record is not used.
+  TEST_ASSERT_EQUAL_INT(check(FrameCheck::Accepted), check(registry.accept(mac, 1, 0)));
+}
+
+void test_a_second_record_with_the_same_mac_or_the_same_id_is_left_out() {
+  FakeStore store;
+  const uint8_t first[kRecordSize] = {1, 1, 1, 0x40, 0, 0, 1, 2, 3, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 0, 0, 0, 0};
+  memcpy(store.data[0], first, kRecordSize);
+  memcpy(store.data[1], first, kRecordSize);
+  store.data[1][9] = 0xEE;
+  memcpy(store.data[2], first, kRecordSize);
+  store.data[2][3] = 0x42;
+  store.present[0] = store.present[1] = store.present[2] = true;
+  NodeRegistry registry(store);
+  TEST_ASSERT_EQUAL_UINT(1, registry.load());
+  TEST_ASSERT_EQUAL_UINT(2, registry.damagedCount());
+  const uint8_t mac[kMacSize] = {0x40, 0, 0, 1, 2, 3};
+  TEST_ASSERT_EQUAL_UINT8(1, registry.keyOf(mac)[0]);
+}
+
+void test_a_read_that_fails_once_is_tried_again() {
+  FakeStore store;
+  {
+    NodeRegistry registry(store);
+    registry.pair(kKindPlug, kMacA, kKeyA);
+  }
+  store.failReadOnceSlot = 0;
+  NodeRegistry registry(store);
+  TEST_ASSERT_EQUAL_UINT(1, registry.load());
+  TEST_ASSERT_EQUAL_UINT(0, registry.damagedCount());
+  TEST_ASSERT_TRUE(registry.isPaired(kMacA));
+}
+
+void test_the_full_state_and_a_kind_change_survive_a_restart() {
+  FakeStore store;
+  uint8_t mac[kMacSize];
+  {
+    NodeRegistry registry(store);
+    for (uint32_t i = 1; i <= kMaxNodes; i++) {
+      makeMac(mac, i);
+      registry.pair(kKindPlug, mac, kKeyA);
+    }
+  }
+  NodeRegistry registry(store);
+  TEST_ASSERT_EQUAL_UINT(64, registry.load());
+  makeMac(mac, 1000);
+  TEST_ASSERT_EQUAL_INT(result(PairResult::RegistryFull), result(registry.pair(kKindPlug, mac, kKeyA)));
+  makeMac(mac, 5);
+  TEST_ASSERT_TRUE(registry.unpair(mac));
+  // The other kind of a known MAC is a new id, and the registry is full, so it is refused.
+  TEST_ASSERT_EQUAL_INT(result(PairResult::RegistryFull), result(registry.pair(kKindClamp, mac, kKeyA)));
+  TEST_ASSERT_EQUAL_INT(result(PairResult::Ok), result(registry.pair(kKindPlug, mac, kKeyA)));
 }
 
 int main(int, char **) {
@@ -459,7 +565,7 @@ int main(int, char **) {
   RUN_TEST(test_the_id_stays_taken_after_the_node_is_removed);
   RUN_TEST(test_removing_forgets_the_pairing_and_wipes_the_key);
   RUN_TEST(test_a_removed_node_pairs_again_in_its_old_slot_with_a_clean_boot_value);
-  RUN_TEST(test_a_removed_node_cannot_come_back_as_the_other_kind);
+  RUN_TEST(test_a_removed_node_that_comes_back_as_the_other_kind_takes_a_new_slot);
   RUN_TEST(test_the_registry_is_full_after_64_ids_for_the_life_of_the_gateway);
   RUN_TEST(test_a_failed_write_leaves_no_pairing);
   RUN_TEST(test_a_failed_write_when_pairing_again_leaves_the_node_removed);
@@ -476,6 +582,13 @@ int main(int, char **) {
   RUN_TEST(test_every_kind_of_damage_is_found);
   RUN_TEST(test_a_slot_that_cannot_be_read_counts_as_damaged_and_is_not_reused);
   RUN_TEST(test_a_stored_removed_node_has_no_key_or_boot_after_load);
-  RUN_TEST(test_the_record_layout_matches_the_document);
+  RUN_TEST(test_the_stored_record_has_the_layout_of_the_store);
+  RUN_TEST(test_a_boot_value_of_zero_is_never_accepted);
+  RUN_TEST(test_the_highest_counter_and_boot_value_work_and_a_new_boot_starts_again);
+  RUN_TEST(test_a_frame_of_a_node_that_was_removed_is_unknown);
+  RUN_TEST(test_a_removed_record_with_a_key_left_in_it_gives_no_key_after_load);
+  RUN_TEST(test_a_second_record_with_the_same_mac_or_the_same_id_is_left_out);
+  RUN_TEST(test_a_read_that_fails_once_is_tried_again);
+  RUN_TEST(test_the_full_state_and_a_kind_change_survive_a_restart);
   return UNITY_END();
 }

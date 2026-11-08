@@ -24,7 +24,6 @@ enum class PairResult : uint8_t {
   InvalidKind,
   InvalidMac,     // all zero, or a group address
   AlreadyPaired,  // the owner removes the node first
-  KindMismatch,   // the id of this MAC was reported with the other kind
   IdTaken,        // the id is kept for another MAC
   RegistryFull,   // 64 ids were reported, and that limit is for the life of the gateway
   StoreFailed,
@@ -33,7 +32,7 @@ enum class PairResult : uint8_t {
 enum class FrameCheck : uint8_t {
   Accepted,
   Unknown,      // no paired node has this MAC
-  Stale,        // an older boot, or a counter that is not higher
+  Stale,        // a boot value of 0 or older than the kept one, or a counter that is not higher
   StoreFailed,  // a new boot could not be written to flash, so the frame is dropped
 };
 
@@ -49,7 +48,8 @@ class NodeRegistry {
   // hold an id that the backend counted. Returns the number of slots that hold a valid record.
   size_t load();
 
-  // Pairs a node with a new key. A node that was removed before and pairs again has the same MAC and uses its old slot, and its kept boot value is forgotten.
+  // Pairs a node with a new key. A node that was removed before and pairs again as the same kind has the same id and uses its old slot, and its kept boot
+  // value is forgotten. The same MAC as the other kind is a new id, so it takes a new slot.
   PairResult pair(uint8_t kind, const uint8_t mac[kMacSize], const uint8_t key[kNodeKeySize]);
 
   // Forgets the pairing of a node and wipes its key. The id keeps its slot. Returns false when no such node is paired or the flash refused the change.
@@ -69,6 +69,8 @@ class NodeRegistry {
 
   // Call it only after the tag of the frame has verified. It checks again, keeps the counter in RAM, and writes a higher boot value to flash
   // before it accepts the frame. A write that fails drops the frame, so a node that boots again is never accepted without a stored value.
+  // The flash write can take tens of milliseconds, so never call it from the ESP-NOW receive callback. Pass the frame to the task that owns
+  // the registry through a queue.
   FrameCheck accept(const uint8_t mac[kMacSize], uint32_t bootId, uint32_t counter);
 
   size_t pairedCount() const;
@@ -87,7 +89,7 @@ class NodeRegistry {
     uint32_t counter;
   };
 
-  int find(const uint8_t mac[kMacSize]) const;
+  int findSlot(const uint8_t mac[kMacSize], uint8_t kind) const;
   int findPaired(const uint8_t mac[kMacSize]) const;
   bool persist(size_t index);
 
