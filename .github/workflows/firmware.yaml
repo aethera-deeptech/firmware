@@ -40,6 +40,22 @@ jobs:
           pip install "platformio==${PLATFORMIO_VERSION}"
           pio run --project-dir gateway --environment hub
 
+      # The four files that the chip needs, with the names that docs/hub-flashing.md uses. boot_app0.bin comes with the Arduino core, and the
+      # upload step of PlatformIO writes it too. The files hold no secret, because the setup code and the keys are made on the board.
+      - name: Collect the flash files of the hub
+        run: |
+          mkdir hub-flash
+          cp gateway/.pio/build/hub/bootloader.bin gateway/.pio/build/hub/partitions.bin gateway/.pio/build/hub/firmware.bin hub-flash/
+          cp "${HOME}/.platformio/packages/framework-arduinoespressif32/tools/partitions/boot_app0.bin" hub-flash/
+
+      - name: Upload the flash files of the hub
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: hub-flash-${{ github.sha }}
+          path: hub-flash/
+          retention-days: 14
+          if-no-files-found: error
+
   native-tests:
     name: Native tests
     runs-on: ubuntu-latest
