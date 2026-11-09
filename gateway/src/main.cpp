@@ -98,8 +98,9 @@ void setup() {
   Serial.printf("Nodes: %u paired, %u of %u ids used, %u damaged\n", static_cast<unsigned>(nodes.pairedCount()),
                 static_cast<unsigned>(nodes.idCount()), static_cast<unsigned>(wattlink::kMaxNodes), static_cast<unsigned>(nodes.damagedCount()));
   // The known answers of the host tests, run through the mbedTLS of the chip.
+  const uint32_t selfTestStart = millis();
   cryptoResult = wattlink::runCryptoSelfTest();
-  Serial.printf("Crypto self test: %s\n", wattlink::selfTestName(cryptoResult));
+  Serial.printf("Crypto self test: %s (%lu ms)\n", wattlink::selfTestName(cryptoResult), static_cast<unsigned long>(millis() - selfTestStart));
   wifi.begin(millis());
   drawHome(true);
 }
