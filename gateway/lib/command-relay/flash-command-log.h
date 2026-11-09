@@ -16,6 +16,7 @@ namespace wattlink {
 //   bytes 8-43   the id of the command, 36 bytes, padded with zero
 //   bytes 44-47  CRC-32 of bytes 0 to 43
 constexpr size_t kCommandBlobSize = 48;
+// A later layout needs a reader for this one, or every old slot is unreadable at the first start after an update, and the relay then holds a switch on.
 constexpr uint8_t kCommandBlobVersion = 1;
 
 // CRC-32 as zlib and Ethernet use it, so the known answer for the text "123456789" is 0xCBF43926.

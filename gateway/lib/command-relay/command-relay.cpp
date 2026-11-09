@@ -94,11 +94,11 @@ size_t CommandRelay::unpersistedExcept(const uint8_t mac[kMacSize]) const {
   return count;
 }
 
-int CommandRelay::pickLogSlot() const {
+int CommandRelay::pickLogSlot(size_t from) const {
   // Only a free slot. A record is never taken before it is forgotten, which is when the life of its command and the time that a plug remembers its number
   // are over, because the number of a record that is gone could be given to a new command while the plug still holds it, and then the plug would not run
   // the new command. The cost is that a burst of commands can fill the log, and then a new command is refused until the oldest records are forgotten.
-  for (size_t i = 0; i < kCommandLogSlots; i++) {
+  for (size_t i = from; i < kCommandLogSlots; i++) {
     if (records_[i].state == CommandState::Free && !unreadable_[i]) {
       return static_cast<int>(i);
     }
@@ -136,27 +136,39 @@ bool CommandRelay::allocateNumber(uint16_t *number) {
 }
 
 bool CommandRelay::persist(const Pending &pending, CommandState state) {
-  int slot = findLog(pending.id);
-  if (slot < 0) {
-    slot = pickLogSlot();
-  }
-  if (slot < 0) {
-    // submit() counts the slots, so this is not expected. It is counted so that it shows in the log if it ever happens.
-    logFailures_++;
-    return false;
-  }
   CommandRecord record;
   memset(&record, 0, sizeof(record));
   memcpy(record.id, pending.id, sizeof(record.id) - 1);
   record.number = pending.number;
   record.state = state;
   record.expiresAt = pending.expiresAt;
-  if (!log_.write(static_cast<size_t>(slot), record)) {
-    logFailures_++;
-    return false;
+  const int known = findLog(pending.id);
+  if (known >= 0) {
+    if (!log_.write(static_cast<size_t>(known), record)) {
+      logFailures_++;
+      return false;
+    }
+    records_[known] = record;
+    return true;
   }
-  records_[slot] = record;
-  return true;
+  // A new record goes to the first free slot. When that write fails, for example because the entry of that slot is damaged and cannot be replaced, the
+  // next free slot gets one try, so one bad slot does not hold back every switch on. A failed slot is not marked, because the failure may be short.
+  size_t from = 0;
+  for (int attempt = 0; attempt < 2; attempt++) {
+    const int slot = pickLogSlot(from);
+    if (slot < 0) {
+      // submit() counts the slots, so this is not expected. It is counted so that it shows in the log if it ever happens.
+      logFailures_++;
+      return false;
+    }
+    if (log_.write(static_cast<size_t>(slot), record)) {
+      records_[slot] = record;
+      return true;
+    }
+    logFailures_++;
+    from = static_cast<size_t>(slot) + 1;
+  }
+  return false;
 }
 
 SubmitResult CommandRelay::submit(uint32_t nowMs, uint32_t serverTime, const char *id, const char *nodeId, bool on, uint32_t expiresAt) {
@@ -223,10 +235,14 @@ SubmitResult CommandRelay::submit(uint32_t nowMs, uint32_t serverTime, const cha
   uint16_t number = 0;
   if (logged >= 0) {
     number = records_[logged].number;
-  } else if (usableLogSlots() <= unpersistedExcept(mac) || !allocateNumber(&number)) {
+  } else {
     // No record could be kept for the command, because the slots that can be used are promised to the commands that wait already. The backend sends it
-    // again when room is free.
-    return SubmitResult::Full;
+    // again when room is free. A switch off is taken without a slot while slots are held as unreadable, because the fault took the room, and a switch
+    // off does no harm when it runs twice. It is sent without a record then, as it is when a write fails.
+    const bool noRoom = usableLogSlots() <= unpersistedExcept(mac) && !(!on && unreadableSlots() > 0);
+    if (noRoom || !allocateNumber(&number)) {
+      return SubmitResult::Full;
+    }
   }
 
   Pending &slot = pending_[place];
@@ -382,7 +398,17 @@ void CommandRelay::forgetEnded(uint32_t serverTime) {
       unreadableTimed_ = true;
       unreadableFrom_ = serverTime;
     } else if (serverTime >= unreadableFrom_ + kUnreadableHoldSeconds) {
-      memset(unreadable_, 0, sizeof(unreadable_));
+      // The hold is over. A free record over the old bytes makes the slot readable, so a restart does not hold again for the same slot.
+      CommandRecord empty;
+      memset(&empty, 0, sizeof(empty));
+      for (size_t i = 0; i < kCommandLogSlots; i++) {
+        if (unreadable_[i]) {
+          unreadable_[i] = false;
+          if (!log_.write(i, empty)) {
+            logFailures_++;
+          }
+        }
+      }
     }
   }
   // The number of a command stays reserved for the time that a plug remembers it, so the record goes later than the command does. A record whose result

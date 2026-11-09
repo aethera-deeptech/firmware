@@ -32,6 +32,8 @@ constexpr uint32_t kEchoUsableMs = 50000;
 constexpr uint32_t kMaxCommandLifeSeconds = 600;
 // How long a slot that could not be read counts as used, counted from the first time of the service that the hub sees after the start. A record that
 // was written before the start belongs to a command that the backend sent before that time, so its life and the reserve of its number are over by then.
+// This relies on the rule of the backend that a command lives 10 minutes (CommandTTL in internal/relay/relay.go and the firmware guide). A longer life
+// at the backend would break it.
 constexpr uint32_t kUnreadableHoldSeconds = kMaxCommandLifeSeconds + kNumberReserveSeconds;
 
 // The state of a command in the log. Free is 0, so a slot that was never written reads as free.
@@ -118,12 +120,14 @@ class CommandRelay {
   void forget(const uint8_t mac[kMacSize]);
 
   // Forgets the records whose command ended more than kNumberReserveSeconds before serverTime. submit() does it too, and the caller may call it for an
-  // answer that holds no command, so the log does not fill up with old records. Nothing is written to flash.
+  // answer that holds no command, so the log does not fill up with old records. Nothing is written to flash, except when the hold of unreadable slots
+  // ends. Then a free record is written over each of them, so the next start does not find the same bytes and hold again. A write that fails is not
+  // retried, and the slot is used again like a free one.
   void forgetEnded(uint32_t serverTime);
 
   size_t pendingCount() const;
   // The slots that could not be read at load() and are still held. They end kUnreadableHoldSeconds after the first time of the service that the relay
-  // sees, and a switch on for an id that the log does not know is refused until then.
+  // sees, and a switch on for an id that the log does not know is refused until then. A switch off is taken also when no free slot is left.
   size_t unreadableSlots() const;
   // The number of writes that the flash refused, for the log of the hub.
   uint32_t logFailures() const { return logFailures_; }
@@ -148,7 +152,7 @@ class CommandRelay {
 
   int findPending(const char *id) const;
   int findLog(const char *id) const;
-  int pickLogSlot() const;  // -1 when no slot can be used
+  int pickLogSlot(size_t from = 0) const;  // -1 when no slot from this index on can be used
   bool resultWaiting(const char *id) const;
   bool numberInUse(uint16_t number) const;
   bool allocateNumber(uint16_t *number);
