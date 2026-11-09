@@ -109,7 +109,7 @@ These rules apply to the encrypted frames. HELLO, HELLO_ACK, PAIR_REQUEST and PA
 
 - The hub gets a command from the backend with a string id and a life of up to 10 minutes. It gives the command a number of 2 bytes that is only used on the link, and keeps the table between the number and the id in flash for 10 minutes, so a hub that restarts does not run the same backend id twice. It drops a waiting command for a plug when a newer one for the same plug arrives, so the commands never run in the wrong order.
 - The hub waits for the next TELEMETRY frame of the node and then sends the command with the echo of that frame. It sends the command again after 5 seconds with the echo of the newest frame, until it gets RESULT or the life ends. The hub sends no command whose life of 10 minutes has ended, and the node has no clock for it.
-- The node switches the relay for the action (1 on, 0 off) and answers RESULT with the same number. The hub reports the result to the backend in its next batch. A Clamp does not switch a machine, so it answers RESULT with ok 0 to every command.
+- The node switches the relay for the action (1 on, 0 off) and answers RESULT with the same number. The hub reports the result to the backend in its next batch. A RESULT follows the same rules of freshness, tag and hub boot number as TELEMETRY, and the hub does not answer a good one with an ACK, because it sends the command again until a RESULT arrives. A Clamp does not switch a machine, so it answers RESULT with ok 0 to every command.
 - A command that finds the node with no channel waits in the hub until the node is back, and the backend life decides whether it is still sent.
 
 ## Overload and conditions
