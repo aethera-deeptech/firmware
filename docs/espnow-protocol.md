@@ -86,10 +86,10 @@ A TELEMETRY frame holds 1 to 8 samples of 25 bytes each, which makes a frame of 
 
 ## The button of the hub
 
-The hub has one button. A short press opens the pairing window, a hold of 3 seconds or more starts the captive portal for the Wi-Fi settings, which is part of the firmware of the hub and not of this protocol, and a hold of 10 seconds asks the backend client for a new claim code.
+The hub has one button. A short press opens the pairing window, a hold of 3 seconds up to less than 10 seconds starts the captive portal for the Wi-Fi settings when the button is released, which is part of the firmware of the hub and not of this protocol, and a hold of 10 seconds asks the backend client for a new claim code.
 
-- A press shorter than 50 ms is bounce and is ignored. The threshold is exactly 50 ms, measured from the first low reading to the first high reading, and a press of exactly 50 ms counts as a short press.
-- The portal starts when the button is released after a hold of 3 seconds up to less than 10 seconds, and not while it is held, because a hold of 10 seconds must not start the portal on the way. The display shows how long the button has been held.
+- A release counts only when the readings stay released for 50 ms, so a single glitch while the button is held does not end the hold. A press shorter than 50 ms is bounce and is ignored. The threshold is exactly 50 ms, measured from the first low reading to the first high reading, and a press of exactly 50 ms counts as a short press.
+- The portal starts when the button is released after a hold of 3 seconds up to less than 10 seconds, and not while it is held, because a hold of 10 seconds must not start the portal on the way. The classifier can tell how long the button has been held, so a later change can show a hint on the display.
 - While the button is held, the new claim code is asked for as soon as 10 seconds have passed, without waiting for the release, and that press is marked as used. A hold of 10 seconds that no reading saw while it was held counts as the same hold when it is released.
 - When the button is released, the hub opens the pairing window only if the press lasted from 50 ms up to less than 3 seconds and was not already used. A long hold therefore never also opens the pairing window, and the window opens a moment after the finger lifts and not at the moment of the press.
 - A short press while the pairing window is open starts the 60 seconds again, so an owner who types slowly keeps the window. The press only moves the end time. It does not close the window, it does not disturb a pairing that is in progress, and it opens no second window.
