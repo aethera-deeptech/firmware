@@ -14,6 +14,11 @@ namespace wattlink {
 // The key in a PAIR_REQUEST and the key of the exchange are the same 32 bytes, and the code passes one where the other is expected.
 static_assert(kPublicKeyBytes == kPublicKeySize, "the public key of the frames is the public key of the exchange");
 
+// A failed key exchange costs two scalar multiplications and no good node makes one, because it comes from a key that is not a point of small order.
+// The window stays open for the owner after a failure, but after this many failures in one window it closes, so a sender in range cannot keep the
+// hub busy for the whole window. The owner presses the button again. The count starts again with every new window.
+constexpr uint8_t kMaxFailedExchanges = 3;
+
 // The steps of the hub in a pairing, as the section "Pairing and keys" of docs/espnow-protocol.md describes them. The class does the logic only.
 // The radio, the display and the flash are not here, so the same code runs on the host in the tests and on the chip.
 // One task must call all of it. Never call it from the ESP-NOW receive callback, because the registry writes flash and the crypto needs a big stack.
@@ -40,7 +45,7 @@ enum class RequestResult : uint8_t {
   Busy,          // another node is being paired, so the frame is ignored and that pairing goes on
   Malformed,     // the payload is not a PAIR_REQUEST, so the frame is ignored and the window stays open
   Refused,       // the registry says no, and the outcome names the reason, so the hub can show it
-  CryptoFailed,  // the key exchange failed, for example an all zero shared secret, and nothing was changed
+  CryptoFailed,  // the key exchange failed, for example an all zero shared secret, and nothing was changed, but see kMaxFailedExchanges
 };
 
 // What the caller needs besides the result. It is always filled, with empty values when they do not apply.
@@ -107,6 +112,7 @@ class HubPairing {
   uint32_t hubBootId_;
 
   bool pending_;
+  uint8_t failedExchanges_;
   uint8_t pendingMac_[kMacSize];
   uint8_t pendingKind_;
   uint8_t pendingKey_[kPairingKeySize];

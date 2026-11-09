@@ -257,6 +257,63 @@ void test_a_failure_of_the_key_exchange_changes_nothing_and_leaves_the_window_op
   }
 }
 
+void test_three_failed_key_exchanges_close_the_window_and_the_next_press_starts_the_count_again() {
+  Rig rig;
+  const NodeSim node = makeNode(1);
+  rig.knobs.failAgree = true;
+  RequestOutcome outcome;
+  rig.window.press(0);
+  for (uint32_t i = 0; i < kMaxFailedExchanges; i++) {
+    TEST_ASSERT_TRUE(rig.window.isOpen(10 + i));
+    TEST_ASSERT_EQUAL_INT(result(RequestResult::CryptoFailed), result(ask(rig, node, 10 + i, &outcome)));
+  }
+  // The window is closed now, so the same request is ignored, and it costs no key exchange.
+  TEST_ASSERT_FALSE(rig.window.isOpen(20));
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(WindowState::Closed), static_cast<int>(rig.window.state()));
+  TEST_ASSERT_EQUAL_INT(result(RequestResult::NotOpen), result(ask(rig, node, 20, &outcome)));
+  TEST_ASSERT_FALSE(rig.pairing.pending());
+  // The owner presses again, and the count starts at zero, so the next failures leave the window open until the limit is reached again.
+  rig.window.press(1000);
+  for (uint32_t i = 0; i + 1 < kMaxFailedExchanges; i++) {
+    TEST_ASSERT_EQUAL_INT(result(RequestResult::CryptoFailed), result(ask(rig, node, 1010 + i, &outcome)));
+    TEST_ASSERT_TRUE(rig.window.isOpen(1010 + i));
+  }
+  rig.knobs.failAgree = false;
+  TEST_ASSERT_EQUAL_INT(result(RequestResult::Accepted), result(ask(rig, node, 1100, &outcome)));
+}
+
+void test_only_failed_key_exchanges_count_and_a_good_request_clears_the_count() {
+  Rig rig;
+  const NodeSim node = makeNode(1);
+  NodeSim zero = makeNode(2);
+  memset(zero.mac, 0, kMacSize);
+  RequestOutcome outcome;
+  rig.window.press(0);
+  // A refused request and a payload that is no request cost no key exchange, so a flood of them never closes the window.
+  for (uint32_t i = 0; i < 10; i++) {
+    TEST_ASSERT_EQUAL_INT(result(RequestResult::Refused), result(ask(rig, zero, 10 + i, &outcome)));
+    TEST_ASSERT_EQUAL_INT(result(RequestResult::Malformed), result(rig.pairing.onPairRequest(10 + i, node.mac, nullptr, 0, &outcome)));
+  }
+  TEST_ASSERT_TRUE(rig.window.isOpen(30));
+  // Failures one short of the limit, then a good request, which pairs and so ends the window with a clean count.
+  rig.knobs.failAgree = true;
+  for (uint32_t i = 0; i + 1 < kMaxFailedExchanges; i++) {
+    TEST_ASSERT_EQUAL_INT(result(RequestResult::CryptoFailed), result(ask(rig, node, 40 + i, &outcome)));
+  }
+  TEST_ASSERT_TRUE(rig.window.isOpen(50));
+  rig.knobs.failAgree = false;
+  TEST_ASSERT_EQUAL_INT(result(RequestResult::Accepted), result(ask(rig, node, 60, &outcome)));
+  TEST_ASSERT_TRUE(rig.window.isPairing(60));
+  // The pairing is cancelled, a new window opens, and the earlier failures do not count in it.
+  rig.pairing.close();
+  rig.window.press(1000);
+  rig.knobs.failAgree = true;
+  for (uint32_t i = 0; i + 1 < kMaxFailedExchanges; i++) {
+    TEST_ASSERT_EQUAL_INT(result(RequestResult::CryptoFailed), result(ask(rig, node, 1010 + i, &outcome)));
+  }
+  TEST_ASSERT_TRUE(rig.window.isOpen(1050));
+}
+
 void test_a_frame_that_does_not_verify_changes_nothing_and_a_good_frame_still_pairs() {
   Rig rig;
   const NodeSim node = makeNode(1);
@@ -581,6 +638,8 @@ int main() {
   RUN_TEST(test_a_node_that_is_paired_is_refused_and_the_window_stays_open);
   RUN_TEST(test_a_full_registry_refuses_a_new_node_and_a_bad_address_is_refused);
   RUN_TEST(test_a_failure_of_the_key_exchange_changes_nothing_and_leaves_the_window_open);
+  RUN_TEST(test_three_failed_key_exchanges_close_the_window_and_the_next_press_starts_the_count_again);
+  RUN_TEST(test_only_failed_key_exchanges_count_and_a_good_request_clears_the_count);
   RUN_TEST(test_a_frame_that_does_not_verify_changes_nothing_and_a_good_frame_still_pairs);
   RUN_TEST(test_a_frame_with_a_key_that_is_not_the_new_key_does_not_pair);
   RUN_TEST(test_a_frame_from_another_address_is_not_pending_and_the_pairing_goes_on);
