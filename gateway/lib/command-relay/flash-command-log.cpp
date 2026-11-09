@@ -74,9 +74,9 @@ bool decodeCommandRecord(const uint8_t in[kCommandBlobSize], CommandRecord *out)
   return true;
 }
 
-bool FlashCommandLog::read(size_t slot, CommandRecord *out) {
+LogRead FlashCommandLog::read(size_t slot, CommandRecord *out) {
   if (slot >= kCommandLogSlots) {
-    return false;
+    return LogRead::Free;
   }
   uint8_t blob[kCommandBlobSize];
   ReadResult found = store_.read(slot, blob);
@@ -86,16 +86,16 @@ bool FlashCommandLog::read(size_t slot, CommandRecord *out) {
   }
   if (found == ReadResult::Failed) {
     failedReads_++;
-    return false;
+    return LogRead::Unreadable;
   }
   if (found == ReadResult::Missing) {
-    return false;
+    return LogRead::Free;
   }
   if (!decodeCommandRecord(blob, out)) {
     damaged_++;
-    return false;
+    return LogRead::Unreadable;
   }
-  return true;
+  return LogRead::Record;
 }
 
 bool FlashCommandLog::write(size_t slot, const CommandRecord &record) {

@@ -38,13 +38,13 @@ class CommandBlobStore {
   virtual bool write(size_t slot, const uint8_t in[kCommandBlobSize]) = 0;
 };
 
-// The log of the relay on top of a blob store. A slot that was never written, that cannot be read, or whose bytes do not pass the check counts as
-// free, as CommandLog says. The two counters tell the caller that a slot was lost, so the hub can print it.
+// The log of the relay on top of a blob store. A slot that was never written is Free. A slot that the flash cannot read, also after one more try, or
+// whose bytes do not pass the check is Unreadable, as CommandLog says. The two counters tell the caller how many slots were lost, so the hub can print it.
 class FlashCommandLog : public CommandLog {
  public:
   explicit FlashCommandLog(CommandBlobStore &store) : store_(store), damaged_(0), failedReads_(0) {}
 
-  bool read(size_t slot, CommandRecord *out) override;
+  LogRead read(size_t slot, CommandRecord *out) override;
   bool write(size_t slot, const CommandRecord &record) override;
 
   // Slots that held bytes which did not pass the check.

@@ -204,12 +204,12 @@ class FakeSender : public CommandSender {
 
 class FakeLog : public CommandLog {
  public:
-  bool read(size_t slot, CommandRecord *out) override {
+  LogRead read(size_t slot, CommandRecord *out) override {
     if (!present[slot]) {
-      return false;
+      return LogRead::Free;
     }
     *out = slots[slot];
-    return true;
+    return LogRead::Record;
   }
   bool write(size_t slot, const CommandRecord &record) override {
     slots[slot] = record;
