@@ -240,7 +240,7 @@ void test_the_page_says_that_only_2_4_ghz_wifi_works() {
   char html[kPageBuffer];
   const PageModel model = {Notice::None, nullptr, false};
   TEST_ASSERT_TRUE(render(model, html) > 0);
-  assertContains(html, "<p>Hub hanya bisa memakai Wi-Fi 2,4 GHz. Wi-Fi 5 GHz tidak didukung. Jika router Anda punya dua nama Wi-Fi, ketik yang 2,4 GHz (biasanya tanpa 5G di namanya). Jika namanya sama, ketik nama itu.</p>");
+  assertContains(html, "<p>Hub hanya bisa memakai Wi-Fi 2,4 GHz. Wi-Fi 5 GHz tidak didukung. Jika router Anda punya dua nama Wi-Fi, ketik yang 2,4 GHz (biasanya tanpa 5G di namanya). Jika hanya ada satu nama Wi-Fi, ketik nama itu.</p>");
   // The hint comes right after the intro and before the form.
   TEST_ASSERT_TRUE(strstr(html, "Wi-Fi 5 GHz tidak didukung") < strstr(html, "<form"));
 }
