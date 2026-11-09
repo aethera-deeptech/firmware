@@ -1,5 +1,6 @@
 #include <Arduino.h>
 
+#include "batch-builder.h"
 #include "boot-counter.h"
 #include "config.h"
 #include "crypto-selftest.h"

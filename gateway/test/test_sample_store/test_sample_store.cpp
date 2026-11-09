@@ -242,6 +242,26 @@ void test_a_sample_number_of_all_bits_is_never_taken_or_acknowledged() {
   TEST_ASSERT_EQUAL_UINT(1, store.size());
 }
 
+void test_every_sample_gets_the_next_serial_and_a_drop_or_a_forget_leaves_gaps_but_no_repeat() {
+  SampleStore store;
+  sendOne(store, 1000, kMacA, kBoot, sampleWith(0));
+  sendOne(store, 1001, kMacB, kBoot, sampleWith(0));
+  sendOne(store, 1002, kMacA, kBoot, sampleWith(1));
+  TEST_ASSERT_EQUAL_UINT32(1, store.at(0).serial);
+  TEST_ASSERT_EQUAL_UINT32(2, store.at(1).serial);
+  TEST_ASSERT_EQUAL_UINT32(3, store.at(2).serial);
+  store.forget(kMacB);
+  TEST_ASSERT_EQUAL_UINT(2, store.size());
+  TEST_ASSERT_EQUAL_UINT32(1, store.at(0).serial);
+  TEST_ASSERT_EQUAL_UINT32(3, store.at(1).serial);
+  sendOne(store, 1003, kMacA, kBoot, sampleWith(2));
+  TEST_ASSERT_EQUAL_UINT32(4, store.at(2).serial);
+  // A sample that is dropped as a repeat or as bad does not use a serial.
+  sendOne(store, 1004, kMacA, kBoot, sampleWith(2));
+  sendOne(store, 1005, kMacA, kBoot, sampleWith(3));
+  TEST_ASSERT_EQUAL_UINT32(5, store.at(3).serial);
+}
+
 void test_a_full_pool_drops_the_oldest_sample() {
   SampleStore store;
   for (uint32_t i = 0; i < kSamplePoolSize + 3; i++) {
@@ -351,6 +371,16 @@ void test_expire_drops_samples_that_were_held_too_long_whatever_their_place_in_t
   TEST_ASSERT_EQUAL_UINT32(2, store.counts().expired);
 }
 
+void test_expire_with_a_clock_value_from_before_the_arrival_drops_nothing() {
+  SampleStore store;
+  Sample fresh = sampleWith(1);
+  fresh.ageMs = 0;
+  sendOne(store, 100050, kMacA, kBoot, fresh);
+  // nowMs was read 50 ms before the sample came in, so the sample is not 49 days old.
+  TEST_ASSERT_EQUAL_UINT(0, store.expire(100000));
+  TEST_ASSERT_EQUAL_UINT(1, store.size());
+}
+
 void test_expire_works_across_the_wrap_of_the_clock() {
   SampleStore store;
   Sample sample = sampleWith(1);
@@ -413,6 +443,7 @@ int main() {
   RUN_TEST(test_a_relay_value_of_2_is_left_out);
   RUN_TEST(test_a_sample_older_than_a_day_is_dropped_and_one_of_exactly_a_day_is_kept);
   RUN_TEST(test_a_sample_number_of_all_bits_is_never_taken_or_acknowledged);
+  RUN_TEST(test_every_sample_gets_the_next_serial_and_a_drop_or_a_forget_leaves_gaps_but_no_repeat);
   RUN_TEST(test_a_full_pool_drops_the_oldest_sample);
   RUN_TEST(test_discard_oldest_takes_samples_from_the_front);
   RUN_TEST(test_forget_drops_the_samples_and_the_numbers_of_a_node_and_keeps_the_others_in_order);
@@ -420,6 +451,7 @@ int main() {
   RUN_TEST(test_the_table_holds_64_nodes_and_refuses_a_65th_until_one_is_forgotten);
   RUN_TEST(test_a_frame_with_a_bad_power_and_a_good_sample_acknowledges_both);
   RUN_TEST(test_expire_drops_samples_that_were_held_too_long_whatever_their_place_in_the_pool);
+  RUN_TEST(test_expire_with_a_clock_value_from_before_the_arrival_drops_nothing);
   RUN_TEST(test_expire_works_across_the_wrap_of_the_clock);
   RUN_TEST(test_expire_works_when_the_pool_has_wrapped_around);
   RUN_TEST(test_a_full_pool_works_with_forget_and_a_push_after_a_discard_at_the_wrap);

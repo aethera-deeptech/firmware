@@ -13,8 +13,8 @@ namespace wattlink {
 // tests and on the chip. One task must call all of it. It builds no batch and has no clock of the world. The time of a sample is kept as the millis counter of the hub
 // (capturedMs), and the batch code turns it into Unix seconds when the clock of the hub is set.
 
-// The pool holds this many samples for all nodes, oldest first. When it is full, the oldest sample is dropped. It is 24 bytes for each sample, so about 48 KB of RAM,
-// and the whole class is about 50 KB. It must be a static object, because it does not fit on the stack of a task, and a block of that size may not be free later.
+// The pool holds this many samples for all nodes, oldest first. When it is full, the oldest sample is dropped. It is 28 bytes for each sample, so about 56 KB of RAM,
+// and the whole class is about 58 KB. It must be a static object, because it does not fit on the stack of a task, and a block of that size may not be free later.
 // Three nodes that send a sample every 10 seconds fill it in about 2 hours, and 64 nodes fill it in about 5 minutes.
 constexpr size_t kSamplePoolSize = 2048;
 
@@ -44,6 +44,7 @@ constexpr uint8_t kHasCondition = 1 << 6;
 
 // A sample in the units of the frame. The batch code converts them (energy goes from Wh to kWh) when it writes the JSON.
 struct StoredSample {
+  uint32_t serial;      // grows by 1 for each sample that the pool takes, so a batch can name the samples that it holds, and it only wraps after 4 billion samples
   uint32_t capturedMs;  // the millis counter of the hub when the node took the sample, which is the arrival time minus the age
   uint32_t powerDeciW;
   uint32_t energyWh;
@@ -89,14 +90,35 @@ class SampleStore : public SampleSink {
 
   // The radio address of the node of a stored sample.
   const uint8_t *macOf(const StoredSample &sample) const { return nodes_[sample.node].mac; }
+  const uint8_t *macOfNode(uint8_t node) const { return nodes_[node].mac; }
 
   // Drops the oldest samples, for example after the backend took them.
   void discardOldest(size_t count);
 
   // Drops every sample that has been held for more than kKeepSampleMs, so the batch code never sends one that the backend would refuse as older than a day.
   // The pool is in the order of arrival and the ages are not, because a node sets its own age, so this looks at every sample. Call it before each batch and so
-  // often that no sample reaches an age of 49 days, when the counter of the clock wraps. Returns the number of samples that it dropped.
+  // often that no sample reaches an age of 2^31 ms (about 24.8 days), because a larger difference reads as a negative age and counts as no age.
+  // A clock value from before the arrival of a sample counts as no age, so a value that was read a moment too early drops nothing.
+  // Returns the number of samples that it dropped.
   size_t expire(uint32_t nowMs);
+
+  // Drops every sample for which drop() is true. The kept samples move towards the head in the same order. A write goes to the place of the kept count and a
+  // read comes from the place of the index, and the kept count is never above the index, so a sample is read before its place is written, also when the pool wraps.
+  // Returns the number of samples that it dropped.
+  template <typename Drop>
+  size_t removeWhere(Drop drop) {
+    size_t kept = 0;
+    for (size_t i = 0; i < size_; i++) {
+      const StoredSample sample = at(i);
+      if (!drop(sample)) {
+        pool_[(head_ + kept) % kSamplePoolSize] = sample;
+        kept++;
+      }
+    }
+    const size_t removed = size_ - kept;
+    size_ = kept;
+    return removed;
+  }
 
   const SampleCounts &counts() const { return counts_; }
 
@@ -112,15 +134,12 @@ class SampleStore : public SampleSink {
   int findNode(const uint8_t mac[kMacSize]) const;
   bool store(uint32_t nowMs, uint8_t node, const Sample &sample);
   void push(const StoredSample &sample);
-  // Drops every sample for which drop() is true. The kept samples move towards the head in the same order. A write goes to the place of the kept count and a
-  // read comes from the place of the index, and the kept count is never above the index, so a sample is read before its place is written, also when the pool wraps.
-  template <typename Drop>
-  size_t removeWhere(Drop drop);
 
   NodeState nodes_[kMaxNodes];
   StoredSample pool_[kSamplePoolSize];
   size_t head_;
   size_t size_;
+  uint32_t nextSerial_;
   SampleCounts counts_;
 };
 
