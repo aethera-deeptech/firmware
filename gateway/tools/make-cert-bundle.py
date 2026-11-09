@@ -91,11 +91,28 @@ def pem_certificates(text):
     return found
 
 
+def load_pinned_list(list_path, pin_path):
+    """Reads the list of certificates and returns its text, when its SHA-256 is the one that the pin file names. Raises BundleError otherwise."""
+    with open(list_path, "rb") as handle:
+        raw = handle.read()
+    with open(pin_path, "r", encoding="ascii") as handle:
+        words = handle.read().split()
+    if not words:
+        raise BundleError("the pin file %s is empty" % pin_path)
+    if hashlib.sha256(raw).hexdigest() != words[0].lower():
+        raise BundleError("%s is not the file that %s names" % (list_path, pin_path))
+    return raw.decode("ascii", errors="replace")
+
+
 def make_bundle(texts):
     """Makes the bundle from the texts of PEM files, and returns its bytes."""
     entries = []
     for text in texts:
-        for der in pem_certificates(text):
+        der_list = pem_certificates(text)
+        # A block that lost its end line does not match the pattern, and it would be left out without a sound.
+        if text.count("-----BEGIN CERTIFICATE-----") != len(der_list):
+            raise BundleError("a certificate block is not complete")
+        for der in der_list:
             entries.append(subject_and_key(der))
     if not entries:
         raise BundleError("there is no certificate in the input")

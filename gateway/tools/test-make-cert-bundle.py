@@ -5,6 +5,7 @@ import hashlib
 import importlib.util
 import os
 import struct
+import tempfile
 import unittest
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -90,6 +91,13 @@ class Errors(unittest.TestCase):
         with self.assertRaises(generator.BundleError):
             generator.make_bundle([cut])
 
+    def test_a_block_that_lost_its_end_line_is_refused_and_not_left_out(self):
+        text = read("cacert.pem")
+        last_end = text.rindex("-----END CERTIFICATE-----")
+        broken = text[:last_end] + text[last_end + len("-----END CERTIFICATE-----") :]
+        with self.assertRaises(generator.BundleError):
+            generator.make_bundle([broken])
+
     def test_bytes_that_are_not_a_certificate_are_refused(self):
         for body in ("AAAA", "MAA=", "MIIB", "MIGAAQ=="):
             with self.assertRaises(generator.BundleError):
@@ -104,6 +112,48 @@ class Errors(unittest.TestCase):
             generator.read_tlv(bytes([0x30, 0x80]), 0)
         with self.assertRaises(generator.BundleError):
             generator.read_tlv(bytes([0x30]), 0)
+
+
+class Pin(unittest.TestCase):
+    def check(self, pin_text, content=b"-----BEGIN CERTIFICATE-----\n-----END CERTIFICATE-----\n"):
+        with tempfile.TemporaryDirectory() as folder:
+            list_path = os.path.join(folder, "list.pem")
+            pin_path = os.path.join(folder, "list.pem.sha256")
+            with open(list_path, "wb") as handle:
+                handle.write(content)
+            with open(pin_path, "w", encoding="ascii") as handle:
+                handle.write(pin_text.replace("DIGEST", hashlib.sha256(content).hexdigest()))
+            return generator.load_pinned_list(list_path, pin_path)
+
+    def test_a_list_with_the_hash_that_the_pin_names_is_read(self):
+        self.assertIn("BEGIN CERTIFICATE", self.check("DIGEST  list.pem\n"))
+        self.assertIn("BEGIN CERTIFICATE", self.check("DIGEST\n"))
+
+    def test_the_hash_may_be_in_capital_letters(self):
+        digest = hashlib.sha256(b"-----BEGIN CERTIFICATE-----\n-----END CERTIFICATE-----\n").hexdigest().upper()
+        self.assertIn("BEGIN CERTIFICATE", self.check(digest + "  list.pem\n"))
+
+    def test_a_list_that_does_not_match_the_pin_is_refused(self):
+        with self.assertRaises(generator.BundleError):
+            self.check("0" * 64 + "  list.pem\n")
+        with self.assertRaises(generator.BundleError):
+            self.check("DIGEST"[:-1] + "  list.pem\n")
+
+    def test_an_empty_pin_file_is_refused(self):
+        for text in ("", "\n", "   \n"):
+            with self.assertRaises(generator.BundleError):
+                self.check(text)
+
+    def test_a_list_that_changed_one_byte_is_refused(self):
+        with tempfile.TemporaryDirectory() as folder:
+            list_path = os.path.join(folder, "list.pem")
+            pin_path = os.path.join(folder, "list.pem.sha256")
+            with open(list_path, "wb") as handle:
+                handle.write(b"one")
+            with open(pin_path, "w", encoding="ascii") as handle:
+                handle.write(hashlib.sha256(b"two").hexdigest())
+            with self.assertRaises(generator.BundleError):
+                generator.load_pinned_list(list_path, pin_path)
 
 
 class Output(unittest.TestCase):

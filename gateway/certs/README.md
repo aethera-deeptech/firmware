@@ -4,9 +4,9 @@ The hub checks the certificate of the backend against a bundle of root certifica
 
 ## Files
 
-- `cacert.pem` is the list of root certificates of Mozilla, as curl publishes it at https://curl.se/ca/cacert.pem. The list is dated 2026-11-05. It is made of public certificates and holds no secret. Mozilla publishes it under the Mozilla Public License 2.0.
-- `cacert.pem.sha256` is the SHA-256 of that file, as curl publishes it at https://curl.se/ca/cacert.pem.sha256. The build of the hub stops when the file and the hash do not match.
-- `x509_crt_bundle.bin` is made by the build from `cacert.pem` with `../tools/make-cert-bundle.py`. It is not committed. The build embeds it in the firmware, and the program reads it through `_binary_certs_x509_crt_bundle_bin_start`.
+- `cacert.pem` is the list of root certificates of Mozilla, as curl publishes it at https://curl.se/ca/cacert.pem. The list is dated 2026-11-05. It is made of public certificates and holds no secret. Mozilla publishes it under the Mozilla Public License 2.0 (https://www.mozilla.org/MPL/2.0/). The file is kept here unchanged, and the source of every certificate in it is the list of Mozilla (https://wiki.mozilla.org/CA). The rest of the repository is under the GPL 3.0, which the MPL 2.0 allows for a larger work.
+- `cacert.pem.sha256` is the SHA-256 of that file, as curl publishes it at https://curl.se/ca/cacert.pem.sha256. The build of the hub stops when the file and the hash do not match. The pin guards against a damaged list and against a change of one of the files only. A change of the list, its hash and the expected bundle hash in one pull request passes the build, and a review has to check the list against curl.se, which a hash cannot do for the reader.
+- `x509_crt_bundle.bin` is made by the build from `cacert.pem` with `../tools/make-cert-bundle.py`. It is not committed. The build embeds it in the firmware, and the program will read it through `_binary_certs_x509_crt_bundle_bin_start` when the client is wired in.
 
 ## Why a bundle of our own
 
