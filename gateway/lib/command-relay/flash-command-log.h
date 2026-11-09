@@ -21,7 +21,7 @@ constexpr uint8_t kCommandBlobVersion = 1;
 // CRC-32 as zlib and Ethernet use it, so the known answer for the text "123456789" is 0xCBF43926.
 uint32_t crc32Ieee(const uint8_t *data, size_t length);
 
-// Writes the record into the 48 bytes. Returns false when the id is longer than 36 characters, and writes nothing then.
+// Writes the record into the 48 bytes. Returns false when the id is longer than 36 characters or the state is not one of the four, and writes nothing then.
 bool encodeCommandRecord(const CommandRecord &record, uint8_t out[kCommandBlobSize]);
 
 // Reads a record. Returns false for a layout of another version, for a state that this code does not know, or for bytes whose CRC does not match, and

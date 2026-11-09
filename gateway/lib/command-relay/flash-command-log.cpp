@@ -41,7 +41,7 @@ uint32_t crc32Ieee(const uint8_t *data, size_t length) {
 
 bool encodeCommandRecord(const CommandRecord &record, uint8_t out[kCommandBlobSize]) {
   // The id has room for 36 characters and the end mark. A longer text is refused and not cut, because a cut id would match another command.
-  if (memchr(record.id, 0, kResultIdSize) == nullptr) {
+  if (memchr(record.id, 0, kResultIdSize) == nullptr || record.state > CommandState::Failed) {
     return false;
   }
   memset(out, 0, kCommandBlobSize);

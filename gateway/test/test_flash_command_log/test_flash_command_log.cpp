@@ -117,6 +117,12 @@ void test_an_id_of_36_characters_fits_and_a_longer_one_is_refused() {
   CommandRecord back;
   TEST_ASSERT_TRUE(decodeCommandRecord(blob, &back));
   TEST_ASSERT_TRUE(sameRecord(record, back));
+  // A state that this code does not know is refused too, and nothing is written.
+  CommandRecord oddState = makeRecord("cmd-1", 7, CommandState::Sent, 99);
+  oddState.state = static_cast<CommandState>(9);
+  memset(blob, 0xEE, sizeof(blob));
+  TEST_ASSERT_FALSE(encodeCommandRecord(oddState, blob));
+  TEST_ASSERT_EQUAL_HEX8(0xEE, blob[0]);
   // No end mark inside the buffer, so the id would be cut. Nothing is written.
   memset(record.id, 'k', kResultIdSize);
   memset(blob, 0xEE, sizeof(blob));
@@ -252,7 +258,8 @@ void test_a_read_that_fails_once_is_tried_again_and_one_that_keeps_failing_is_co
   TEST_ASSERT_EQUAL_UINT32(0, log.damaged());
 }
 
-void test_a_write_that_fails_leaves_the_old_record_and_a_long_id_is_not_written() {
+// The fake keeps the old bytes when a write fails, so this tests what the log does with a failed write and not what NVS does.
+void test_a_failed_write_is_reported_and_the_log_does_not_touch_the_old_slot_and_a_long_id_is_not_written() {
   FakeBlobStore store;
   FlashCommandLog log(store);
   TEST_ASSERT_TRUE(log.write(4, makeRecord("cmd-1", 5, CommandState::Sent, 10)));
@@ -337,7 +344,7 @@ int main() {
   RUN_TEST(test_a_slot_that_was_never_written_reads_as_free_and_is_not_counted_as_lost);
   RUN_TEST(test_a_damaged_slot_reads_as_free_and_is_counted);
   RUN_TEST(test_a_read_that_fails_once_is_tried_again_and_one_that_keeps_failing_is_counted);
-  RUN_TEST(test_a_write_that_fails_leaves_the_old_record_and_a_long_id_is_not_written);
+  RUN_TEST(test_a_failed_write_is_reported_and_the_log_does_not_touch_the_old_slot_and_a_long_id_is_not_written);
   RUN_TEST(test_a_relay_that_restarts_over_the_flash_log_sends_the_same_number_again);
   return UNITY_END();
 }
