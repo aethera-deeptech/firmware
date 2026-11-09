@@ -51,13 +51,48 @@ const uint8_t kSharedExpected[kSharedSecretSize] = {
     0xe0, 0x7e, 0x21, 0xc9, 0x47, 0xd1, 0x9e, 0x33, 0x76, 0xf0, 0x9b, 0x3c, 0x1e, 0x16, 0x17, 0x42,
 };
 
+// RFC 7748, section 5.2, second vector. The u coordinate has its top bit set, which the wrapper must ignore.
+const uint8_t kVector2Scalar[kPublicKeySize] = {
+    0x4b, 0x66, 0xe9, 0xd4, 0xd1, 0xb4, 0x67, 0x3c, 0x5a, 0xd2, 0x26, 0x91, 0x95, 0x7d, 0x6a, 0xf5,
+    0xc1, 0x1b, 0x64, 0x21, 0xe0, 0xea, 0x01, 0xd4, 0x2c, 0xa4, 0x16, 0x9e, 0x79, 0x18, 0xba, 0x0d,
+};
+const uint8_t kVector2U[kPublicKeySize] = {
+    0xe5, 0x21, 0x0f, 0x12, 0x78, 0x68, 0x11, 0xd3, 0xf4, 0xb7, 0x95, 0x9d, 0x05, 0x38, 0xae, 0x2c,
+    0x31, 0xdb, 0xe7, 0x10, 0x6f, 0xc0, 0x3c, 0x3e, 0xfc, 0x4c, 0xd5, 0x49, 0xc7, 0x15, 0xa4, 0x93,
+};
+const uint8_t kVector2Expected[kSharedSecretSize] = {
+    0x95, 0xcb, 0xde, 0x94, 0x76, 0xe8, 0x90, 0x7d, 0x7a, 0xad, 0xe4, 0x5c, 0xb4, 0xb8, 0x73, 0xf8,
+    0x8b, 0x59, 0x5a, 0x68, 0x79, 0x9f, 0xa1, 0x52, 0xe6, 0xf8, 0xf7, 0x64, 0x7a, 0xac, 0x79, 0x57,
+};
+
+// The points of small order that mbedTLS must refuse. They are 0, 1 and the prime minus 1, which is 2^255 - 20 and so ec ff ... ff 7f.
+const uint8_t kZeroPoint[kPublicKeySize] = {0};
+const uint8_t kOnePoint[kPublicKeySize] = {1};
+const uint8_t kPrimeMinusOne[kPublicKeySize] = {
+    0xec, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+    0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x7f,
+};
+
+// The wrapper must say no to a point of small order, and it must leave a zero output.
+bool refusesPoint(const uint8_t point[kPublicKeySize]) {
+  uint8_t shared[kSharedSecretSize];
+  memset(shared, 0xAA, sizeof(shared));
+  bool refused = !mbedtlsX25519Agree(nullptr, kAlicePrivate, point, shared);
+  for (size_t i = 0; i < sizeof(shared); i++) {
+    refused = refused && shared[i] == 0;
+  }
+  return refused;
+}
+
 bool x25519Matches() {
   uint8_t publicKey[kPublicKeySize];
   uint8_t shared[kSharedSecretSize];
   const bool ok = mbedtlsX25519PublicKey(kAlicePrivate, publicKey) && memcmp(publicKey, kAlicePublic, sizeof(publicKey)) == 0 &&
                   mbedtlsX25519PublicKey(kBobPrivate, publicKey) && memcmp(publicKey, kBobPublic, sizeof(publicKey)) == 0 &&
                   mbedtlsX25519Agree(nullptr, kAlicePrivate, kBobPublic, shared) && memcmp(shared, kSharedExpected, sizeof(shared)) == 0 &&
-                  mbedtlsX25519Agree(nullptr, kBobPrivate, kAlicePublic, shared) && memcmp(shared, kSharedExpected, sizeof(shared)) == 0;
+                  mbedtlsX25519Agree(nullptr, kBobPrivate, kAlicePublic, shared) && memcmp(shared, kSharedExpected, sizeof(shared)) == 0 &&
+                  mbedtlsX25519Agree(nullptr, kVector2Scalar, kVector2U, shared) && memcmp(shared, kVector2Expected, sizeof(shared)) == 0 &&
+                  refusesPoint(kZeroPoint) && refusesPoint(kOnePoint) && refusesPoint(kPrimeMinusOne);
   wipe(shared, sizeof(shared));
   return ok;
 }

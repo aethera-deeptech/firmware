@@ -18,9 +18,9 @@ bool mbedtlsX25519PublicKey(const uint8_t privateKey[kPublicKeySize], uint8_t pu
 // The chip makes true random numbers only while the radio is on, and a pairing runs only then.
 bool mbedtlsX25519Generate(void *context, uint8_t privateKey[kPublicKeySize], uint8_t publicKey[kPublicKeySize]);
 
-// The shared secret of our private key and the public key of the peer. Returns false when mbedTLS refuses the peer key (a value of the
-// coordinate that is not below the prime, or a point that gives no result), and then the output is zero. It does not refuse a peer key that
-// gives an all zero secret, because derivePairingKey does that.
+// The shared secret of our private key and the public key of the peer. The top bit of the peer key is ignored and a value of the prime or above is
+// reduced, as RFC 7748 says. Returns false for a null peer key and when mbedTLS refuses the peer key (the points of small order such as 0, 1 and the
+// prime minus 1, or a point that gives no result), and then the output is zero. derivePairingKey also refuses an all zero secret.
 bool mbedtlsX25519Agree(void *context, const uint8_t privateKey[kPublicKeySize], const uint8_t peerPublicKey[kPublicKeySize],
                         uint8_t shared[kSharedSecretSize]);
 

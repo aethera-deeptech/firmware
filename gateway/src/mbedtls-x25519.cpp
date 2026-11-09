@@ -45,7 +45,8 @@ bool multiply(const uint8_t scalar[kPublicKeySize], const uint8_t *peer, uint8_t
   if (ok && peer == nullptr) {
     ok = mbedtls_ecp_copy(&base, &group.G) == 0;
   } else if (ok) {
-    // The RFC says that the top bit of the u coordinate is ignored. A value that is still not below the prime is refused by mbedTLS.
+    // The RFC says that the top bit of the u coordinate is ignored and that a value of the prime or above is reduced. mbedTLS reduces it and
+    // refuses only the points of small order (0, 1, the prime minus 1 and the other known bad points), because they give a secret that no key changes.
     uint8_t u[kPublicKeySize];
     memcpy(u, peer, sizeof(u));
     u[31] &= 0x7F;
@@ -84,6 +85,11 @@ bool mbedtlsX25519Generate(void *, uint8_t privateKey[kPublicKeySize], uint8_t p
 
 bool mbedtlsX25519Agree(void *, const uint8_t privateKey[kPublicKeySize], const uint8_t peerPublicKey[kPublicKeySize],
                         uint8_t shared[kSharedSecretSize]) {
+  // multiply() reads a null peer as the base point, which would hand back our own public key as the secret.
+  if (peerPublicKey == nullptr) {
+    memset(shared, 0, kSharedSecretSize);
+    return false;
+  }
   return multiply(privateKey, peerPublicKey, shared);
 }
 
