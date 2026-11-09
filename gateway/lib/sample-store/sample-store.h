@@ -18,6 +18,19 @@ namespace wattlink {
 // Three nodes that send a sample every 10 seconds fill it in about 2 hours, and 64 nodes fill it in about 5 minutes.
 constexpr size_t kSamplePoolSize = 2048;
 
+// One node may hold this many samples at the same time, which is an eighth of the pool. A node that sends faster than the hub takes the samples away, for
+// example a faulty node that floods the radio, then pushes out its own oldest samples and not those of the other nodes. The most that it can push out of
+// the others is this many samples, and only while the pool is full. The cost is that one node in a long outage of the backend keeps the last 256 samples,
+// which is about 43 minutes at one sample every 10 seconds, although the pool could hold more of a single node.
+constexpr size_t kMaxSamplesPerNode = kSamplePoolSize / 8;
+
+// A sampleSeq counts from 0 at every boot of a node and grows by 1 for each sample. A node that samples every 10 seconds needs about 680 years to pass the
+// first limit, so a larger value is a fault and is not stored. The second limit is the largest step that the hub accepts within one boot of a node, which is
+// about 1.9 years of samples every 10 seconds, so a node that was out of reach for months still counts as new. A larger step is a fault too, and it is not
+// stored and not taken as the new count, so one wrong number cannot make every later sample of the node look like a repeat.
+constexpr uint32_t kMaxSampleSeq = 0x7FFFFFFFu;
+constexpr uint32_t kMaxSampleSeqStep = 1UL << 24;
+
 // The backend drops a sample that is older than a day. The hub refuses a sample that arrives with an age above a day, and expire() drops a held sample before it
 // is a day old, with a margin for the time that a batch takes.
 constexpr uint32_t kMaxSampleAgeMs = 24UL * 60UL * 60UL * 1000UL;
@@ -66,6 +79,7 @@ struct SampleCounts {
   uint32_t overflowed;  // samples that were dropped because the pool was full
   uint32_t expired;     // samples that were held too long, see expire()
   uint32_t refused;     // frames from a node that the table had no room for
+  uint32_t capped;      // samples that were pushed out because their node held kMaxSamplesPerNode already
 };
 
 class SampleStore : public SampleSink {
@@ -113,6 +127,8 @@ class SampleStore : public SampleSink {
       if (!drop(sample)) {
         pool_[(head_ + kept) % kSamplePoolSize] = sample;
         kept++;
+      } else if (nodes_[sample.node].held > 0) {
+        nodes_[sample.node].held--;
       }
     }
     const size_t removed = size_ - kept;
@@ -129,11 +145,13 @@ class SampleStore : public SampleSink {
     bool hasSeq;
     uint32_t bootId;
     uint32_t highestSeq;
+    uint16_t held;  // how many samples of the node are in the pool, which is never more than kMaxSamplesPerNode
   };
 
   int findNode(const uint8_t mac[kMacSize]) const;
   bool store(uint32_t nowMs, uint8_t node, const Sample &sample);
   void push(const StoredSample &sample);
+  void dropOldestOf(uint8_t node);
 
   NodeState nodes_[kMaxNodes];
   StoredSample pool_[kSamplePoolSize];

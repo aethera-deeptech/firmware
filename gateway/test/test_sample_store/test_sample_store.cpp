@@ -45,6 +45,17 @@ void makeMac(uint8_t mac[kMacSize], uint32_t number) {
   mac[5] = static_cast<uint8_t>(number);
 }
 
+// Sample number index of a ring of 16 nodes that take turns, as many nodes do, so that no node reaches its share while the pool is filled and pushed round.
+// The nodes are the numbers 1 to 16, so the first is kMacA and the second is kMacB.
+constexpr uint32_t kRingNodes = 16;
+
+uint32_t sendInRing(SampleStore &store, uint32_t nowMs, uint32_t index, const Sample *override = nullptr) {
+  uint8_t mac[kMacSize];
+  makeMac(mac, 1 + index % kRingNodes);
+  const Sample sample = override != nullptr ? *override : sampleWith(index / kRingNodes);
+  return sendOne(store, nowMs, mac, kBoot, sample);
+}
+
 }  // namespace
 
 void setUp() {}
@@ -265,7 +276,7 @@ void test_every_sample_gets_the_next_serial_and_a_drop_or_a_forget_leaves_gaps_b
 void test_a_full_pool_drops_the_oldest_sample() {
   SampleStore store;
   for (uint32_t i = 0; i < kSamplePoolSize + 3; i++) {
-    sendOne(store, 1000 + i, kMacA, kBoot, sampleWith(i));
+    sendInRing(store, 1000 + i, i);
   }
   TEST_ASSERT_EQUAL_UINT(kSamplePoolSize, store.size());
   TEST_ASSERT_EQUAL_UINT32(3, store.counts().overflowed);
@@ -310,16 +321,23 @@ void test_forget_works_when_the_pool_has_wrapped_around() {
   SampleStore store;
   // Fill the pool and push it round, so the oldest sample sits near the end of the array.
   for (uint32_t i = 0; i < kSamplePoolSize + 10; i++) {
-    sendOne(store, 1000 + i, (i % 2 == 0) ? kMacA : kMacB, kBoot, sampleWith(i));
+    sendInRing(store, 1000 + i, i);
   }
   const size_t before = store.size();
   TEST_ASSERT_EQUAL_UINT(kSamplePoolSize, before);
+  size_t ofA = 0;
+  for (size_t i = 0; i < before; i++) {
+    if (memcmp(store.macOf(store.at(i)), kMacA, kMacSize) == 0) {
+      ofA++;
+    }
+  }
+  TEST_ASSERT_TRUE(ofA > 0);
   store.forget(kMacA);
-  TEST_ASSERT_EQUAL_UINT(before / 2, store.size());
-  // Only the samples of B are left, and they are still in the order of their arrival.
+  TEST_ASSERT_EQUAL_UINT(before - ofA, store.size());
+  // None of the samples of A are left, and the others are still in the order of their arrival.
   uint32_t last = 0;
   for (size_t i = 0; i < store.size(); i++) {
-    TEST_ASSERT_EQUAL_UINT8_ARRAY(kMacB, store.macOf(store.at(i)), kMacSize);
+    TEST_ASSERT_TRUE(memcmp(store.macOf(store.at(i)), kMacA, kMacSize) != 0);
     TEST_ASSERT_TRUE(i == 0 || store.at(i).capturedMs > last);
     last = store.at(i).capturedMs;
   }
@@ -381,6 +399,113 @@ void test_expire_with_a_clock_value_from_before_the_arrival_drops_nothing() {
   TEST_ASSERT_EQUAL_UINT(1, store.size());
 }
 
+// Sends count samples of one node with the numbers first, first + 1 and so on, eight in a frame as the radio carries them. The power names the number.
+void sendRun(SampleStore &store, uint32_t nowMs, const uint8_t mac[kMacSize], uint32_t first, uint32_t count) {
+  uint32_t sent = 0;
+  while (sent < count) {
+    Sample frame[8];
+    size_t n = 0;
+    while (n < 8 && sent < count) {
+      frame[n] = sampleWith(first + sent);
+      frame[n].powerDeciW = first + sent;
+      n++;
+      sent++;
+    }
+    send(store, nowMs, mac, kBoot, frame, n);
+  }
+}
+
+void test_a_node_holds_at_most_its_share_and_keeps_its_newest_samples() {
+  SampleStore store;
+  sendRun(store, 10000, kMacA, 0, 1000);
+  TEST_ASSERT_EQUAL_UINT(kMaxSamplesPerNode, store.size());
+  TEST_ASSERT_EQUAL_UINT32(1000 - kMaxSamplesPerNode, store.counts().capped);
+  TEST_ASSERT_EQUAL_UINT32(0, store.counts().overflowed);
+  TEST_ASSERT_EQUAL_UINT32(1000 - kMaxSamplesPerNode, store.at(0).powerDeciW);
+  TEST_ASSERT_EQUAL_UINT32(999, store.at(store.size() - 1).powerDeciW);
+}
+
+void test_a_node_that_floods_cannot_push_out_more_than_its_share_of_the_samples_of_the_others() {
+  SampleStore store;
+  // Eight nodes fill the pool, each with its share.
+  const size_t others = kSamplePoolSize / kMaxSamplesPerNode;
+  for (size_t i = 0; i < others; i++) {
+    uint8_t mac[kMacSize];
+    makeMac(mac, 100 + static_cast<uint32_t>(i));
+    sendRun(store, 10000, mac, 0, kMaxSamplesPerNode);
+  }
+  TEST_ASSERT_EQUAL_UINT(kSamplePoolSize, store.size());
+  // A ninth node sends many more samples than the pool holds.
+  uint8_t flooder[kMacSize];
+  makeMac(flooder, 999);
+  sendRun(store, 20000, flooder, 0, 5000);
+  TEST_ASSERT_EQUAL_UINT(kSamplePoolSize, store.size());
+  size_t held[2] = {0, 0};
+  for (size_t i = 0; i < store.size(); i++) {
+    held[memcmp(store.macOf(store.at(i)), flooder, kMacSize) == 0 ? 1 : 0]++;
+  }
+  // The flooder holds its share and no more, and the others lost that much at most, which is what it took while the pool was full.
+  TEST_ASSERT_EQUAL_UINT(kMaxSamplesPerNode, held[1]);
+  TEST_ASSERT_EQUAL_UINT(kSamplePoolSize - kMaxSamplesPerNode, held[0]);
+  TEST_ASSERT_EQUAL_UINT32(kMaxSamplesPerNode, store.counts().overflowed);
+}
+
+void test_the_count_of_a_node_follows_every_way_that_samples_leave_the_pool() {
+  SampleStore store;
+  sendRun(store, 10000, kMacA, 0, kMaxSamplesPerNode);
+  sendRun(store, 10000, kMacB, 0, 10);
+  TEST_ASSERT_EQUAL_UINT32(0, store.counts().capped);
+  // The oldest samples are the ones of A, so discarding makes room for A without any push-out.
+  store.discardOldest(10);
+  sendRun(store, 10000, kMacA, kMaxSamplesPerNode, 10);
+  TEST_ASSERT_EQUAL_UINT32(0, store.counts().capped);
+  // A removal by a rule, as the batch code does after an acknowledgement, makes room too.
+  store.removeWhere([](const StoredSample &sample) { return sample.powerDeciW < 100; });
+  sendRun(store, 10000, kMacA, kMaxSamplesPerNode + 10, 90);
+  TEST_ASSERT_EQUAL_UINT32(0, store.counts().capped);
+  // Expiry makes room as well.
+  store.expire(10000 + kKeepSampleMs + 600);
+  TEST_ASSERT_EQUAL_UINT(0, store.size());
+  sendRun(store, 10000 + kKeepSampleMs + 700, kMacA, 400, kMaxSamplesPerNode);
+  TEST_ASSERT_EQUAL_UINT32(0, store.counts().capped);
+  // A node that is forgotten starts with an empty share.
+  store.forget(kMacA);
+  sendRun(store, 20000, kMacB, 0, 1);
+  uint8_t other[kMacSize];
+  makeMac(other, 500);
+  sendRun(store, 20000, other, 0, kMaxSamplesPerNode);
+  TEST_ASSERT_EQUAL_UINT32(0, store.counts().capped);
+}
+
+void test_a_sample_number_that_no_node_reaches_or_a_step_that_no_node_makes_is_dropped_and_the_count_stays() {
+  SampleStore store;
+  TEST_ASSERT_EQUAL_UINT32(2, send(store, 1000, kMacA, kBoot, (const Sample[]){sampleWith(0), sampleWith(1), sampleWith(2)}, 3));
+  // A huge number is dropped and not acknowledged, and the next sample of the node is new as before.
+  TEST_ASSERT_EQUAL_UINT32(2, sendOne(store, 1100, kMacA, kBoot, sampleWith(0xFFFFFFFEu)));
+  TEST_ASSERT_EQUAL_UINT32(2, sendOne(store, 1100, kMacA, kBoot, sampleWith(kMaxSampleSeq + 1)));
+  TEST_ASSERT_EQUAL_UINT32(3, sendOne(store, 1200, kMacA, kBoot, sampleWith(3)));
+  TEST_ASSERT_EQUAL_UINT(4, store.size());
+  TEST_ASSERT_EQUAL_UINT32(2, store.counts().rejected);
+  // The largest step is taken and one more is not.
+  TEST_ASSERT_EQUAL_UINT32(3 + kMaxSampleSeqStep, sendOne(store, 1300, kMacA, kBoot, sampleWith(3 + kMaxSampleSeqStep)));
+  TEST_ASSERT_EQUAL_UINT32(3 + kMaxSampleSeqStep, sendOne(store, 1400, kMacA, kBoot, sampleWith(3 + 2 * kMaxSampleSeqStep + 1)));
+  TEST_ASSERT_EQUAL_UINT(5, store.size());
+  TEST_ASSERT_EQUAL_UINT32(3, store.counts().rejected);
+  // A repeat is still a repeat and not a step.
+  TEST_ASSERT_EQUAL_UINT32(3 + kMaxSampleSeqStep, sendOne(store, 1500, kMacA, kBoot, sampleWith(2)));
+  TEST_ASSERT_EQUAL_UINT32(1, store.counts().repeats);
+}
+
+void test_the_first_sample_of_a_boot_may_be_the_largest_number_that_a_node_reaches_and_no_larger() {
+  SampleStore store;
+  TEST_ASSERT_EQUAL_UINT32(kNoSampleSeq, sendOne(store, 1000, kMacA, kBoot, sampleWith(kMaxSampleSeq + 1)));
+  TEST_ASSERT_EQUAL_UINT(0, store.size());
+  TEST_ASSERT_EQUAL_UINT32(kMaxSampleSeq, sendOne(store, 1100, kMacA, kBoot, sampleWith(kMaxSampleSeq)));
+  // A new boot of the node starts from nothing, so the step limit does not hold it to the old count.
+  TEST_ASSERT_EQUAL_UINT32(5, sendOne(store, 1200, kMacA, kBoot + 1, sampleWith(5)));
+  TEST_ASSERT_EQUAL_UINT(2, store.size());
+}
+
 void test_expire_works_across_the_wrap_of_the_clock() {
   SampleStore store;
   Sample sample = sampleWith(1);
@@ -394,9 +519,9 @@ void test_expire_works_across_the_wrap_of_the_clock() {
 void test_expire_works_when_the_pool_has_wrapped_around() {
   SampleStore store;
   for (uint32_t i = 0; i < kSamplePoolSize + 10; i++) {
-    Sample sample = sampleWith(i);
+    Sample sample = sampleWith(i / kRingNodes);
     sample.ageMs = (i % 2 == 0) ? 0 : 1000;
-    sendOne(store, 5000, kMacA, kBoot, sample);
+    sendInRing(store, 5000, i, &sample);
   }
   TEST_ASSERT_EQUAL_UINT(kSamplePoolSize, store.size());
   // Samples that arrived with an age of 1000 ms were taken at 4000 ms, and the others at 5000 ms. At this time only the first kind is past the window.
@@ -410,7 +535,7 @@ void test_expire_works_when_the_pool_has_wrapped_around() {
 void test_a_full_pool_works_with_forget_and_a_push_after_a_discard_at_the_wrap() {
   SampleStore store;
   for (uint32_t i = 0; i < kSamplePoolSize + 5; i++) {
-    sendOne(store, 1000 + i, (i % 2 == 0) ? kMacA : kMacB, kBoot, sampleWith(i));
+    sendInRing(store, 1000 + i, i);
   }
   store.forget(kMacA);
   const size_t half = store.size();
@@ -452,6 +577,11 @@ int main() {
   RUN_TEST(test_a_frame_with_a_bad_power_and_a_good_sample_acknowledges_both);
   RUN_TEST(test_expire_drops_samples_that_were_held_too_long_whatever_their_place_in_the_pool);
   RUN_TEST(test_expire_with_a_clock_value_from_before_the_arrival_drops_nothing);
+  RUN_TEST(test_a_node_holds_at_most_its_share_and_keeps_its_newest_samples);
+  RUN_TEST(test_a_node_that_floods_cannot_push_out_more_than_its_share_of_the_samples_of_the_others);
+  RUN_TEST(test_the_count_of_a_node_follows_every_way_that_samples_leave_the_pool);
+  RUN_TEST(test_a_sample_number_that_no_node_reaches_or_a_step_that_no_node_makes_is_dropped_and_the_count_stays);
+  RUN_TEST(test_the_first_sample_of_a_boot_may_be_the_largest_number_that_a_node_reaches_and_no_larger);
   RUN_TEST(test_expire_works_across_the_wrap_of_the_clock);
   RUN_TEST(test_expire_works_when_the_pool_has_wrapped_around);
   RUN_TEST(test_a_full_pool_works_with_forget_and_a_push_after_a_discard_at_the_wrap);
