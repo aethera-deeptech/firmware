@@ -1,0 +1,7 @@
+{
+  "name": "command-relay",
+  "version": "0.1.0",
+  "description": "The relay commands of the backend on the hub. It queues them, sends each one to its plug on the next frame of that plug, repeats it until the plug answers, and keeps the results for the next batch",
+  "frameworks": "*",
+  "platforms": "*"
+}
