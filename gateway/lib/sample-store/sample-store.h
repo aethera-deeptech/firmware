@@ -13,8 +13,8 @@ namespace wattlink {
 // tests and on the chip. One task must call all of it. It builds no batch and has no clock of the world. The time of a sample is kept as the millis counter of the hub
 // (capturedMs), and the batch code turns it into Unix seconds when the clock of the hub is set.
 
-// The pool holds this many samples for all nodes, oldest first. When it is full, the oldest sample is dropped. It is 24 bytes for each sample, so about 48 KB of RAM,
-// and the whole class is about 50 KB. It must be a static object, because it does not fit on the stack of a task, and a block of that size may not be free later.
+// The pool holds this many samples for all nodes, oldest first. When it is full, the oldest sample is dropped. It is 28 bytes for each sample, so about 56 KB of RAM,
+// and the whole class is about 58 KB. It must be a static object, because it does not fit on the stack of a task, and a block of that size may not be free later.
 // Three nodes that send a sample every 10 seconds fill it in about 2 hours, and 64 nodes fill it in about 5 minutes.
 constexpr size_t kSamplePoolSize = 2048;
 
@@ -44,6 +44,7 @@ constexpr uint8_t kHasCondition = 1 << 6;
 
 // A sample in the units of the frame. The batch code converts them (energy goes from Wh to kWh) when it writes the JSON.
 struct StoredSample {
+  uint32_t serial;      // grows by 1 for each sample that the pool takes, so a batch can name the samples that it holds, and it only wraps after 4 billion samples
   uint32_t capturedMs;  // the millis counter of the hub when the node took the sample, which is the arrival time minus the age
   uint32_t powerDeciW;
   uint32_t energyWh;
@@ -89,6 +90,7 @@ class SampleStore : public SampleSink {
 
   // The radio address of the node of a stored sample.
   const uint8_t *macOf(const StoredSample &sample) const { return nodes_[sample.node].mac; }
+  const uint8_t *macOfNode(uint8_t node) const { return nodes_[node].mac; }
 
   // Drops the oldest samples, for example after the backend took them.
   void discardOldest(size_t count);
@@ -121,6 +123,7 @@ class SampleStore : public SampleSink {
   StoredSample pool_[kSamplePoolSize];
   size_t head_;
   size_t size_;
+  uint32_t nextSerial_;
   SampleCounts counts_;
 };
 

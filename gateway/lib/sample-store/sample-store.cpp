@@ -4,7 +4,7 @@
 
 namespace wattlink {
 
-SampleStore::SampleStore() : head_(0), size_(0) {
+SampleStore::SampleStore() : head_(0), size_(0), nextSerial_(1) {
   memset(nodes_, 0, sizeof(nodes_));
   memset(pool_, 0, sizeof(pool_));
   memset(&counts_, 0, sizeof(counts_));
@@ -26,7 +26,9 @@ void SampleStore::push(const StoredSample &sample) {
     size_--;
     counts_.overflowed++;
   }
-  pool_[(head_ + size_) % kSamplePoolSize] = sample;
+  StoredSample taken = sample;
+  taken.serial = nextSerial_++;
+  pool_[(head_ + size_) % kSamplePoolSize] = taken;
   size_++;
 }
 
