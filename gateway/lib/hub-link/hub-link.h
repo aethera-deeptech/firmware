@@ -20,6 +20,10 @@ namespace wattlink {
 // The hub answers at most this many HELLO frames in each window, as the section "Finding the hub" says.
 constexpr uint32_t kHelloWindowMs = 1000;
 constexpr uint8_t kHelloPerWindow = 5;
+// One radio address gets at most this many answers in each window, so a node that repeats its HELLO does not use up the answers of the others. A node
+// scans the channels one after the other and is heard on one of them, so it needs one answer. The hub remembers the last kHelloTrackedMacs addresses.
+constexpr uint8_t kHelloPerMacPerWindow = 2;
+constexpr size_t kHelloTrackedMacs = 8;
 
 // The way out to the radio. The implementation adds a temporary peer for the send and removes it when the send is done, because the link layer holds few peers.
 // A send may block the calling task for a short time. On the chip it waits 50 ms at most for the report of the link layer.
@@ -99,7 +103,7 @@ class HubLink : public CommandSender {
   void deliver(uint32_t nowMs, const uint8_t mac[kMacSize], const Header &header, uint32_t hubBootId, const Sample *samples, size_t count,
                bool justPaired, LinkEvent *event);
   void fillNodeId(const uint8_t mac[kMacSize], LinkEvent *event) const;
-  bool helloAllowed(uint32_t nowMs);
+  bool helloAllowed(uint32_t nowMs, const uint8_t mac[kMacSize]);
   bool sendPlain(const uint8_t mac[kMacSize], FrameType type, const uint8_t *payload, size_t length);
   bool sendAck(const uint8_t mac[kMacSize], uint32_t nodeBootId, uint32_t highestSampleSeq);
 
@@ -112,6 +116,15 @@ class HubLink : public CommandSender {
   uint32_t counter_;  // one counter for every frame that the hub sends, so no pair of boot number and counter is used twice with a key
   uint32_t helloWindowStart_;
   uint8_t helloCount_;
+
+  // The HELLO answers of the last addresses, each with the start of its own window.
+  struct HelloSender {
+    bool used;
+    uint8_t mac[kMacSize];
+    uint32_t windowStart;
+    uint8_t count;
+  };
+  HelloSender helloSenders_[kHelloTrackedMacs];
 };
 
 }  // namespace wattlink

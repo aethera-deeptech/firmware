@@ -19,9 +19,31 @@ int SampleStore::findNode(const uint8_t mac[kMacSize]) const {
   return -1;
 }
 
+// This looks at the whole pool and moves what it keeps, which takes about half a millisecond with a full pool (an estimate, not measured). It runs for every
+// sample of a node that is at its share, so a node that floods costs that for each sample, and a node that is only slow in a long outage costs it once in
+// a sample interval. The cost is accepted, because the single task has the time and the alternative is a second list for each node.
+void SampleStore::dropOldestOf(uint8_t node) {
+  bool done = false;
+  removeWhere([&done, node](const StoredSample &sample) -> bool {
+    if (!done && sample.node == node) {
+      done = true;
+      return true;
+    }
+    return false;
+  });
+}
+
 void SampleStore::push(const StoredSample &sample) {
+  // A node that holds its share already loses its own oldest sample first, so it cannot push out the samples of the other nodes.
+  if (nodes_[sample.node].held >= kMaxSamplesPerNode) {
+    dropOldestOf(sample.node);
+    counts_.capped++;
+  }
   if (size_ == kSamplePoolSize) {
     // The oldest sample goes, because the newest are the ones that the owner looks at.
+    if (nodes_[pool_[head_].node].held > 0) {
+      nodes_[pool_[head_].node].held--;
+    }
     head_ = (head_ + 1) % kSamplePoolSize;
     size_--;
     counts_.overflowed++;
@@ -30,6 +52,7 @@ void SampleStore::push(const StoredSample &sample) {
   taken.serial = nextSerial_++;
   pool_[(head_ + size_) % kSamplePoolSize] = taken;
   size_++;
+  nodes_[sample.node].held++;
 }
 
 // Returns false when the sample is dropped. A value other than the power is left out when it is out of range.
@@ -108,6 +131,12 @@ uint32_t SampleStore::onSamples(uint32_t nowMs, const uint8_t mac[kMacSize], uin
       counts_.rejected++;
       continue;
     }
+    if (sample.sampleSeq > kMaxSampleSeq || (node.hasSeq && sample.sampleSeq > node.highestSeq && sample.sampleSeq - node.highestSeq > kMaxSampleSeqStep)) {
+      // A number that no node reaches, or a step that no node makes. The sample is dropped and the count of the node stays, so the next samples of
+      // the node still count as new.
+      counts_.rejected++;
+      continue;
+    }
     if (node.hasSeq && sample.sampleSeq <= node.highestSeq) {
       counts_.repeats++;
       continue;
@@ -125,6 +154,11 @@ uint32_t SampleStore::onSamples(uint32_t nowMs, const uint8_t mac[kMacSize], uin
 void SampleStore::discardOldest(size_t count) {
   if (count >= size_) {
     count = size_;
+  }
+  for (size_t i = 0; i < count; i++) {
+    if (nodes_[at(i).node].held > 0) {
+      nodes_[at(i).node].held--;
+    }
   }
   head_ = (head_ + count) % kSamplePoolSize;
   size_ -= count;

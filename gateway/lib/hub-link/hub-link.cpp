@@ -42,7 +42,9 @@ HubLink::HubLink(HubPairing &pairing, NodeRegistry &registry, RadioPort &radio, 
       hubBootId_(pairing.hubBootId()),
       counter_(0),
       helloWindowStart_(0),
-      helloCount_(0) {}
+      helloCount_(0) {
+  memset(helloSenders_, 0, sizeof(helloSenders_));
+}
 
 LinkEvent HubLink::onFrame(uint32_t nowMs, const uint8_t mac[kMacSize], const uint8_t *frame, size_t length) {
   LinkEvent event;
@@ -73,7 +75,36 @@ LinkEvent HubLink::onFrame(uint32_t nowMs, const uint8_t mac[kMacSize], const ui
   return event;
 }
 
-bool HubLink::helloAllowed(uint32_t nowMs) {
+bool HubLink::helloAllowed(uint32_t nowMs, const uint8_t mac[kMacSize]) {
+  // The address is looked up first. A new address takes a free place, or the place of the address whose window is the oldest.
+  HelloSender *sender = nullptr;
+  HelloSender *place = &helloSenders_[0];
+  for (size_t i = 0; i < kHelloTrackedMacs; i++) {
+    HelloSender &candidate = helloSenders_[i];
+    if (candidate.used && memcmp(candidate.mac, mac, kMacSize) == 0) {
+      sender = &candidate;
+      break;
+    }
+    if (!candidate.used) {
+      place = &candidate;
+    } else if (place->used && nowMs - candidate.windowStart > nowMs - place->windowStart) {
+      place = &candidate;
+    }
+  }
+  if (sender == nullptr) {
+    sender = place;
+    sender->used = true;
+    memcpy(sender->mac, mac, kMacSize);
+    sender->windowStart = nowMs;
+    sender->count = 0;
+  } else if (nowMs - sender->windowStart >= kHelloWindowMs) {
+    sender->windowStart = nowMs;
+    sender->count = 0;
+  }
+  // The limit of the address comes first, so the HELLO frames that it refuses do not use up the global limit.
+  if (sender->count >= kHelloPerMacPerWindow) {
+    return false;
+  }
   if (helloCount_ == 0 || nowMs - helloWindowStart_ >= kHelloWindowMs) {
     helloWindowStart_ = nowMs;
     helloCount_ = 0;
@@ -82,6 +113,7 @@ bool HubLink::helloAllowed(uint32_t nowMs) {
     return false;
   }
   helloCount_++;
+  sender->count++;
   return true;
 }
 
@@ -93,7 +125,7 @@ void HubLink::onHello(uint32_t nowMs, const uint8_t mac[kMacSize], const uint8_t
   if (!parsePlainFrame(frame, length, &header, &payload, &payloadLength) || !decodeHello(payload, payloadLength, &hello)) {
     return;
   }
-  if (!helloAllowed(nowMs)) {
+  if (!helloAllowed(nowMs, mac)) {
     event->kind = LinkEventKind::HelloLimited;
     return;
   }

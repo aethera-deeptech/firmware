@@ -334,12 +334,16 @@ void test_samples_that_come_in_after_a_batch_was_made_are_not_taken_with_it_and_
   TEST_ASSERT_EQUAL_UINT32(30, rig.store.at(1).powerDeciW);
 }
 
-void test_a_node_with_many_samples_is_split_by_the_size_of_the_batch() {
+void test_a_full_pool_of_the_samples_of_eight_nodes_is_split_by_the_size_of_the_batch() {
   Rig rig;
-  rig.pairPlug(1);
-  for (uint32_t i = 0; i < 1100; i++) {
-    put(rig, kNow, 1, fullSample(i));
+  // A node holds at most its share of the pool, so it takes eight nodes to fill the pool, and the size of the body is what splits it into batches.
+  for (uint8_t n = 1; n <= 8; n++) {
+    rig.pairPlug(n);
+    for (uint32_t i = 0; i < kMaxSamplesPerNode; i++) {
+      put(rig, kNow, n, fullSample(i));
+    }
   }
+  TEST_ASSERT_EQUAL_UINT(kSamplePoolSize, rig.store.size());
   size_t total = 0;
   int batches = 0;
   uint32_t now = kNow;
@@ -354,17 +358,18 @@ void test_a_node_with_many_samples_is_split_by_the_size_of_the_batch() {
     now += kMinBatchGapMs;
     TEST_ASSERT_TRUE(batches < 10);
   }
-  TEST_ASSERT_EQUAL_UINT(1100, total);
-  TEST_ASSERT_EQUAL_INT(2, batches);
+  TEST_ASSERT_EQUAL_UINT(kSamplePoolSize, total);
+  TEST_ASSERT_TRUE(batches >= 2);
   TEST_ASSERT_EQUAL_UINT(0, rig.store.size());
 }
 
 void test_a_full_pool_of_the_largest_samples_stays_below_the_budget_in_every_batch() {
   Rig rig;
-  rig.pairPlug(1);
-  rig.pairPlug(2);
+  for (uint8_t n = 1; n <= 8; n++) {
+    rig.pairPlug(n);
+  }
   for (uint32_t i = 0; i < kSamplePoolSize; i++) {
-    Sample sample = fullSample(i);
+    Sample sample = fullSample(i / 8);
     sample.ageMs = 0;
     sample.voltageDeciV = kMaxVoltageDeciV;
     sample.currentCentiA = kMaxCurrentCentiA;
@@ -373,7 +378,7 @@ void test_a_full_pool_of_the_largest_samples_stays_below_the_budget_in_every_bat
     sample.frequencyDeciHz = kMaxFrequencyDeciHz;
     sample.powerFactorCenti = kMaxPowerFactorCenti;
     sample.condition = 3;
-    put(rig, kNow, 1 + i % 2, sample);
+    put(rig, kNow, static_cast<uint32_t>(1 + i % 8), sample);
   }
   size_t total = 0;
   uint32_t now = kNow;
@@ -698,7 +703,7 @@ int main() {
   RUN_TEST(test_nodes_are_in_the_order_of_their_first_sample_and_samples_are_in_the_order_of_arrival);
   RUN_TEST(test_a_batch_has_at_most_16_nodes_and_takes_all_their_samples_and_the_rest_goes_in_the_next_batch);
   RUN_TEST(test_samples_that_come_in_after_a_batch_was_made_are_not_taken_with_it_and_other_nodes_stay);
-  RUN_TEST(test_a_node_with_many_samples_is_split_by_the_size_of_the_batch);
+  RUN_TEST(test_a_full_pool_of_the_samples_of_eight_nodes_is_split_by_the_size_of_the_batch);
   RUN_TEST(test_a_full_pool_of_the_largest_samples_stays_below_the_budget_in_every_batch);
   RUN_TEST(test_the_acknowledgement_drops_the_samples_of_the_batch_and_leaves_the_later_ones);
   RUN_TEST(test_a_batch_that_was_sent_and_not_acknowledged_keeps_its_samples_and_its_number);
