@@ -15,6 +15,8 @@ namespace key {
 // network next to the password of an old one. The name has no control characters, so the first line feed is always the separator.
 constexpr const char *kWifi = "wifi";
 constexpr const char *kApiKey = "api_key";
+// The value is "1" when the owner claimed the hub with the current key, and the flag is removed otherwise.
+constexpr const char *kEnrolled = "enrolled";
 }  // namespace key
 
 struct WifiSettings {
@@ -61,14 +63,26 @@ class SettingsStore {
   // The key is made only once. A hub that loses its flash makes a new one and enrolls again, as the firmware guide of the backend says.
   bool ensureApiKey(RandomU32 random, void *context, char out[kApiKeySize], bool *created);
 
+  // Makes a new key and stores it over the old one. A write that fails leaves the old key as it was. Returns false when the random source is stuck or the
+  // flash refused the key.
+  bool replaceApiKey(RandomU32 random, void *context);
+
   // Removes the key, for a factory reset.
   bool clearApiKey();
+
+  // The flag that says that the owner claimed the hub with the current key. It is false when it is missing or damaged.
+  bool loadEnrolled();
+  // Returns true when the flag holds the value afterwards.
+  bool saveEnrolled(bool enrolled);
 
   // Writes a line for the log that says what is stored and never shows a password or a key. The name of the network is not a secret,
   // because the router broadcasts it. Returns the number of characters, cut to fit size.
   size_t describe(char *out, size_t size);
 
  private:
+  // Makes the text of a new key, without storing it. Returns false when the random source is stuck.
+  static bool makeApiKey(RandomU32 random, void *context, char out[kApiKeySize]);
+
   KeyValueStore &store_;
 };
 

@@ -64,6 +64,80 @@ uint32_t scripted(void *context) {
 const uint32_t kBytesZeroToThirtyOne[8] = {0x03020100, 0x07060504, 0x0b0a0908, 0x0f0e0d0c, 0x13121110, 0x17161514, 0x1b1a1918, 0x1f1e1d1c};
 const char kKeyForZeroToThirtyOne[] = "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8";
 
+void test_a_new_key_replaces_the_old_one_and_a_failed_write_keeps_the_old_one() {
+  FakeStore flash;
+  SettingsStore settings(flash);
+  const uint32_t first[] = {1, 2, 3, 4, 5, 6, 7, 8};
+  const uint32_t second[] = {11, 12, 13, 14, 15, 16, 17, 18};
+  Script one = {first, 8, 0};
+  Script two = {second, 8, 0};
+  char oldKey[kApiKeySize];
+  bool created = false;
+  TEST_ASSERT_TRUE(settings.ensureApiKey(scripted, &one, oldKey, &created));
+  TEST_ASSERT_TRUE(settings.replaceApiKey(scripted, &two));
+  char newKey[kApiKeySize];
+  TEST_ASSERT_TRUE(settings.loadApiKey(newKey));
+  TEST_ASSERT_TRUE(strcmp(oldKey, newKey) != 0);
+  TEST_ASSERT_EQUAL_UINT(kGeneratedApiKeyLength, strlen(newKey));
+  // A failed write leaves the key that was there.
+  flash.failPutOn = "api_key";
+  Script three = {first, 8, 0};
+  TEST_ASSERT_FALSE(settings.replaceApiKey(scripted, &three));
+  char kept[kApiKeySize];
+  TEST_ASSERT_TRUE(settings.loadApiKey(kept));
+  TEST_ASSERT_EQUAL_STRING(newKey, kept);
+}
+
+void test_a_new_key_is_refused_when_the_random_source_is_stuck_and_the_old_key_stays() {
+  FakeStore flash;
+  SettingsStore settings(flash);
+  const uint32_t good[] = {1, 2, 3, 4, 5, 6, 7, 8};
+  Script one = {good, 8, 0};
+  char oldKey[kApiKeySize];
+  bool created = false;
+  TEST_ASSERT_TRUE(settings.ensureApiKey(scripted, &one, oldKey, &created));
+  const uint32_t stuck[] = {9};
+  Script two = {stuck, 1, 0};
+  TEST_ASSERT_FALSE(settings.replaceApiKey(scripted, &two));
+  char kept[kApiKeySize];
+  TEST_ASSERT_TRUE(settings.loadApiKey(kept));
+  TEST_ASSERT_EQUAL_STRING(oldKey, kept);
+}
+
+void test_a_new_key_can_be_made_when_there_is_no_key() {
+  FakeStore flash;
+  SettingsStore settings(flash);
+  const uint32_t values[] = {1, 2, 3, 4, 5, 6, 7, 8};
+  Script script = {values, 8, 0};
+  TEST_ASSERT_TRUE(settings.replaceApiKey(scripted, &script));
+  char key[kApiKeySize];
+  TEST_ASSERT_TRUE(settings.loadApiKey(key));
+}
+
+void test_the_enrolled_flag_is_stored_cleared_and_read_as_false_when_it_is_damaged() {
+  FakeStore flash;
+  SettingsStore settings(flash);
+  TEST_ASSERT_FALSE(settings.loadEnrolled());
+  TEST_ASSERT_TRUE(settings.saveEnrolled(true));
+  TEST_ASSERT_TRUE(settings.loadEnrolled());
+  TEST_ASSERT_EQUAL_STRING("1", flash.data["enrolled"].c_str());
+  TEST_ASSERT_TRUE(settings.saveEnrolled(false));
+  TEST_ASSERT_FALSE(settings.loadEnrolled());
+  TEST_ASSERT_TRUE(flash.data.find("enrolled") == flash.data.end());
+  flash.data["enrolled"] = "yes";
+  TEST_ASSERT_FALSE(settings.loadEnrolled());
+  flash.data["enrolled"] = "11";
+  TEST_ASSERT_FALSE(settings.loadEnrolled());
+  // Clearing a flag that is not there is not an error, and a failed write is reported.
+  flash.data.clear();
+  TEST_ASSERT_TRUE(settings.saveEnrolled(false));
+  flash.failPutOn = "enrolled";
+  TEST_ASSERT_FALSE(settings.saveEnrolled(true));
+  flash.failPutOn = "";
+  flash.failRemoveOn = "enrolled";
+  TEST_ASSERT_FALSE(settings.saveEnrolled(false));
+}
+
 }  // namespace
 
 void setUp() {}
@@ -95,7 +169,7 @@ void test_base64url_uses_the_url_alphabet_and_no_padding() {
 
 void test_base64url_refuses_a_small_buffer() {
   const uint8_t data[3] = {1, 2, 3};
-  char out[4] = {'x', 'x', 'x', 'x'};
+  char out[5] = {'x', 'x', 'x', 'x', 'x'};
   TEST_ASSERT_EQUAL_UINT(0, base64UrlEncode(data, 3, out, 4));
   TEST_ASSERT_EQUAL_STRING("", out);
   TEST_ASSERT_EQUAL_UINT(4, base64UrlEncode(data, 3, out, 5));
@@ -347,6 +421,7 @@ void test_a_damaged_name_shows_as_none_in_the_log_line() {
 void test_the_keys_fit_the_limit_of_the_flash() {
   TEST_ASSERT_TRUE(strlen(key::kWifi) <= 15);
   TEST_ASSERT_TRUE(strlen(key::kApiKey) <= 15);
+  TEST_ASSERT_TRUE(strlen(key::kEnrolled) <= 15);
 }
 
 int main(int, char **) {
@@ -374,5 +449,9 @@ int main(int, char **) {
   RUN_TEST(test_one_different_word_among_equal_ones_is_enough);
   RUN_TEST(test_a_damaged_name_shows_as_none_in_the_log_line);
   RUN_TEST(test_the_keys_fit_the_limit_of_the_flash);
+  RUN_TEST(test_a_new_key_replaces_the_old_one_and_a_failed_write_keeps_the_old_one);
+  RUN_TEST(test_a_new_key_is_refused_when_the_random_source_is_stuck_and_the_old_key_stays);
+  RUN_TEST(test_a_new_key_can_be_made_when_there_is_no_key);
+  RUN_TEST(test_the_enrolled_flag_is_stored_cleared_and_read_as_false_when_it_is_damaged);
   return UNITY_END();
 }

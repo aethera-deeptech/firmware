@@ -259,11 +259,15 @@ bool BackendClient::requestNewEnroll(uint32_t nowMs) {
   if (state_ == ClientState::Stopped || inFlight_) {
     return false;
   }
-  if (!store_.renewKey()) {
+  // The flag goes first. A power loss between the two writes then leaves a hub that is not claimed and has its old key, which asks for a code again, and
+  // never a hub that is claimed with a key that the backend does not know.
+  if (store_.enrolled() && !store_.setEnrolled(false)) {
     return false;
   }
+  const bool renewed = store_.renewKey();
+  // The flag is cleared in flash, so the client asks for a code in any case, with the new key or with the old key when the flash refused the new one.
   goNeedEnroll(nowMs);
-  return true;
+  return renewed;
 }
 
 bool BackendClient::startRequest(uint32_t nowMs, Pending kind, const HttpRequest &request) {

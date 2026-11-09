@@ -111,12 +111,8 @@ bool SettingsStore::loadApiKey(char out[kApiKeySize]) {
   return true;
 }
 
-bool SettingsStore::ensureApiKey(RandomU32 random, void *context, char out[kApiKeySize], bool *created) {
-  *created = false;
-  if (loadApiKey(out)) {
-    return true;
-  }
-
+bool SettingsStore::makeApiKey(RandomU32 random, void *context, char out[kApiKeySize]) {
+  out[0] = '\0';
   uint8_t bytes[kRandomKeyBytes];
   uint32_t firstWord = 0;
   bool allSame = true;
@@ -134,10 +130,21 @@ bool SettingsStore::ensureApiKey(RandomU32 random, void *context, char out[kApiK
   }
 
   // Eight equal numbers in a row mean that the source is stuck, and a key made from them would be easy to guess.
-  char newKey[kApiKeySize] = {0};
-  const bool encoded = !allSame && base64UrlEncode(bytes, sizeof(bytes), newKey, sizeof(newKey)) == kGeneratedApiKeyLength;
+  const bool encoded = !allSame && base64UrlEncode(bytes, sizeof(bytes), out, kApiKeySize) == kGeneratedApiKeyLength;
   wipe(bytes, sizeof(bytes));
-  if (!encoded || !store_.put(key::kApiKey, newKey)) {
+  if (!encoded) {
+    wipe(out, kApiKeySize);
+  }
+  return encoded;
+}
+
+bool SettingsStore::ensureApiKey(RandomU32 random, void *context, char out[kApiKeySize], bool *created) {
+  *created = false;
+  if (loadApiKey(out)) {
+    return true;
+  }
+  char newKey[kApiKeySize] = {0};
+  if (!makeApiKey(random, context, newKey) || !store_.put(key::kApiKey, newKey)) {
     wipe(newKey, sizeof(newKey));
     out[0] = '\0';
     return false;
@@ -148,8 +155,24 @@ bool SettingsStore::ensureApiKey(RandomU32 random, void *context, char out[kApiK
   return true;
 }
 
+bool SettingsStore::replaceApiKey(RandomU32 random, void *context) {
+  char newKey[kApiKeySize] = {0};
+  const bool stored = makeApiKey(random, context, newKey) && store_.put(key::kApiKey, newKey);
+  wipe(newKey, sizeof(newKey));
+  return stored;
+}
+
 bool SettingsStore::clearApiKey() {
   return store_.remove(key::kApiKey);
+}
+
+bool SettingsStore::loadEnrolled() {
+  char value[4] = {0};
+  return store_.get(key::kEnrolled, value, sizeof(value)) && strcmp(value, "1") == 0;
+}
+
+bool SettingsStore::saveEnrolled(bool enrolled) {
+  return enrolled ? store_.put(key::kEnrolled, "1") : store_.remove(key::kEnrolled);
 }
 
 size_t SettingsStore::describe(char *out, size_t size) {
