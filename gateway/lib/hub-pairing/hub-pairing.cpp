@@ -9,7 +9,7 @@ namespace wattlink {
 
 HubPairing::HubPairing(PairingWindow &window, NodeRegistry &registry, const HubCrypto &crypto, const uint8_t hubMac[kMacSize],
                        uint32_t hubBootId)
-    : window_(window), registry_(registry), crypto_(crypto), hubBootId_(hubBootId), pending_(false), pendingKind_(0) {
+    : window_(window), registry_(registry), crypto_(crypto), hubBootId_(hubBootId), pending_(false), failedExchanges_(0), pendingKind_(0) {
   memcpy(hubMac_, hubMac, kMacSize);
   memset(pendingMac_, 0, sizeof(pendingMac_));
   memset(pendingKey_, 0, sizeof(pendingKey_));
@@ -28,6 +28,10 @@ void HubPairing::wipePending() {
 
 void HubPairing::update(uint32_t nowMs) {
   window_.update(nowMs);
+  // A new window starts with a clean count, and a closed window is the only way to a new window.
+  if (window_.state() == WindowState::Closed) {
+    failedExchanges_ = 0;
+  }
   if (pending_ && !window_.isPairing(nowMs)) {
     wipePending();
   }
@@ -35,6 +39,7 @@ void HubPairing::update(uint32_t nowMs) {
 
 void HubPairing::close() {
   window_.close();
+  failedExchanges_ = 0;
   wipePending();
 }
 
@@ -88,9 +93,16 @@ RequestResult HubPairing::onPairRequest(uint32_t nowMs, const uint8_t mac[kMacSi
   if (!encoded || !window_.beginPairing(nowMs)) {
     wipe(key, sizeof(key));
     memset(outcome->acceptPayload, 0, sizeof(outcome->acceptPayload));
+    // After the limit the window closes. Nothing is pending here, because a pending pairing makes the window Pairing and a request Busy.
+    // The count is cleared here too, so a press before the next update() does not open a window with the old count.
+    if (++failedExchanges_ >= kMaxFailedExchanges) {
+      window_.close();
+      failedExchanges_ = 0;
+    }
     return RequestResult::CryptoFailed;
   }
 
+  failedExchanges_ = 0;
   pending_ = true;
   pendingKind_ = kind;
   memcpy(pendingMac_, mac, kMacSize);
