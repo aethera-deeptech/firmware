@@ -1,0 +1,150 @@
+#include "sample-store.h"
+
+#include <string.h>
+
+namespace wattlink {
+
+SampleStore::SampleStore() : head_(0), size_(0) {
+  memset(nodes_, 0, sizeof(nodes_));
+  memset(pool_, 0, sizeof(pool_));
+  memset(&counts_, 0, sizeof(counts_));
+}
+
+int SampleStore::findNode(const uint8_t mac[kMacSize]) const {
+  for (size_t i = 0; i < kMaxNodes; i++) {
+    if (nodes_[i].inUse && memcmp(nodes_[i].mac, mac, kMacSize) == 0) {
+      return static_cast<int>(i);
+    }
+  }
+  return -1;
+}
+
+void SampleStore::push(const StoredSample &sample) {
+  if (size_ == kSamplePoolSize) {
+    // The oldest sample goes, because the newest are the ones that the owner looks at.
+    head_ = (head_ + 1) % kSamplePoolSize;
+    size_--;
+    counts_.overflowed++;
+  }
+  pool_[(head_ + size_) % kSamplePoolSize] = sample;
+  size_++;
+}
+
+// Returns false when the sample is dropped. A value other than the power is left out when it is out of range.
+bool SampleStore::store(uint32_t nowMs, uint8_t node, const Sample &sample) {
+  if (sample.powerDeciW > kMaxPowerDeciW || sample.ageMs > kMaxSampleAgeMs) {
+    // A power of all bits is above the limit too, so a missing power is dropped here.
+    return false;
+  }
+  StoredSample stored;
+  memset(&stored, 0, sizeof(stored));
+  stored.capturedMs = nowMs - sample.ageMs;
+  stored.powerDeciW = sample.powerDeciW;
+  stored.node = node;
+  if (sample.voltageDeciV <= kMaxVoltageDeciV) {
+    stored.voltageDeciV = sample.voltageDeciV;
+    stored.fields |= kHasVoltage;
+  }
+  if (sample.currentCentiA <= kMaxCurrentCentiA) {
+    stored.currentCentiA = sample.currentCentiA;
+    stored.fields |= kHasCurrent;
+  }
+  if (sample.energyWh != kNoU32) {
+    stored.energyWh = sample.energyWh;
+    stored.fields |= kHasEnergy;
+  }
+  if (sample.frequencyDeciHz <= kMaxFrequencyDeciHz) {
+    stored.frequencyDeciHz = sample.frequencyDeciHz;
+    stored.fields |= kHasFrequency;
+  }
+  if (sample.powerFactorCenti <= kMaxPowerFactorCenti) {
+    stored.powerFactorCenti = sample.powerFactorCenti;
+    stored.fields |= kHasPowerFactor;
+  }
+  if (sample.condition <= kMaxCondition) {
+    stored.condition = sample.condition;
+    stored.fields |= kHasCondition;
+  }
+  if (sample.relay <= 1) {
+    stored.relay = sample.relay;
+    stored.fields |= kHasRelay;
+  }
+  push(stored);
+  counts_.stored++;
+  return true;
+}
+
+uint32_t SampleStore::onSamples(uint32_t nowMs, const uint8_t mac[kMacSize], uint32_t nodeBootId, const Sample *samples, size_t count) {
+  int index = findNode(mac);
+  if (index < 0) {
+    for (size_t i = 0; i < kMaxNodes; i++) {
+      if (!nodes_[i].inUse) {
+        index = static_cast<int>(i);
+        memset(&nodes_[i], 0, sizeof(nodes_[i]));
+        nodes_[i].inUse = true;
+        memcpy(nodes_[i].mac, mac, kMacSize);
+        break;
+      }
+    }
+  }
+  if (index < 0) {
+    counts_.refused++;
+    return kNoSampleSeq;
+  }
+
+  NodeState &node = nodes_[index];
+  if (node.hasSeq && node.bootId != nodeBootId) {
+    // A new boot of the node counts its samples from 0 again.
+    node.hasSeq = false;
+  }
+  node.bootId = nodeBootId;
+
+  for (size_t i = 0; i < count; i++) {
+    const Sample &sample = samples[i];
+    if (sample.sampleSeq == kNoSampleSeq) {
+      // The value is the "none" of an ACK, so a node could never be told that this sample arrived.
+      counts_.rejected++;
+      continue;
+    }
+    if (node.hasSeq && sample.sampleSeq <= node.highestSeq) {
+      counts_.repeats++;
+      continue;
+    }
+    // The sample counts as received, also when it is dropped below, so a bad sample never stops the ACK.
+    node.highestSeq = sample.sampleSeq;
+    node.hasSeq = true;
+    if (!store(nowMs, static_cast<uint8_t>(index), sample)) {
+      counts_.rejected++;
+    }
+  }
+  return node.hasSeq ? node.highestSeq : kNoSampleSeq;
+}
+
+void SampleStore::discardOldest(size_t count) {
+  if (count >= size_) {
+    count = size_;
+  }
+  head_ = (head_ + count) % kSamplePoolSize;
+  size_ -= count;
+}
+
+void SampleStore::forget(const uint8_t mac[kMacSize]) {
+  const int index = findNode(mac);
+  if (index < 0) {
+    return;
+  }
+  // The samples of other nodes move towards the head, in the same order. A write goes to the place of the kept count and a read comes from the place of
+  // the index, and the kept count is never above the index, so a sample is read before its place is written, also when the pool wraps around.
+  size_t kept = 0;
+  for (size_t i = 0; i < size_; i++) {
+    const StoredSample sample = at(i);
+    if (sample.node != index) {
+      pool_[(head_ + kept) % kSamplePoolSize] = sample;
+      kept++;
+    }
+  }
+  size_ = kept;
+  memset(&nodes_[index], 0, sizeof(nodes_[index]));
+}
+
+}  // namespace wattlink

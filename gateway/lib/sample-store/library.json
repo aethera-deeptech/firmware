@@ -1,0 +1,7 @@
+{
+  "name": "sample-store",
+  "version": "0.1.0",
+  "description": "The samples that nodes sent, kept in RAM until a batch for the backend takes them, with repeats and values that the backend would refuse left out",
+  "frameworks": "*",
+  "platforms": "*"
+}
