@@ -114,7 +114,11 @@ static void drawScreen(uint32_t now) {
 static void logLinkEvent(const wattlink::LinkEvent &event) {
   switch (event.kind) {
     case wattlink::LinkEventKind::PairRequest:
-      Serial.printf("Link: pair request, result %d, reason %d\n", static_cast<int>(event.request), static_cast<int>(event.refusal));
+      // A request with a closed window, a busy window or a bad payload comes from anyone in range and needs no key, so it is not logged.
+      if (event.request == wattlink::RequestResult::Accepted || event.request == wattlink::RequestResult::Refused ||
+          event.request == wattlink::RequestResult::CryptoFailed) {
+        Serial.printf("Link: pair request, result %d, reason %d\n", static_cast<int>(event.request), static_cast<int>(event.refusal));
+      }
       break;
     case wattlink::LinkEventKind::PairedNode:
       Serial.printf("Link: paired %s, %u samples in its first frame\n", event.nodeId, static_cast<unsigned>(event.samples));
@@ -146,6 +150,10 @@ static void serviceRadio(uint32_t now) {
     }
   }
   if (hubPairing != nullptr) {
+    // The radio can go off with the window open, when the saved Wi-Fi is gone. No node can answer then, so the window is closed.
+    if (!radio.active()) {
+      hubPairing->close();
+    }
     hubPairing->update(now);
   }
   if (now - lastExpireMs >= kExpireEveryMs) {
