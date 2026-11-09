@@ -1,0 +1,7 @@
+{
+  "name": "hub-pairing",
+  "version": "0.1.0",
+  "description": "The steps of the hub in a pairing, from the PAIR_REQUEST of a node to the first TELEMETRY frame that proves the new key",
+  "frameworks": "*",
+  "platforms": "*"
+}
