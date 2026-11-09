@@ -72,9 +72,7 @@ bool CommandRelay::resultWaiting(const char *id) const {
 size_t CommandRelay::usableLogSlots() const {
   size_t usable = 0;
   for (size_t i = 0; i < kCommandLogSlots; i++) {
-    const bool finished = records_[i].state == CommandState::Done || records_[i].state == CommandState::Failed;
-    if (records_[i].state == CommandState::Free ||
-        (finished && findPending(records_[i].id) < 0 && !resultWaiting(records_[i].id))) {
+    if (records_[i].state == CommandState::Free) {
       usable++;
     }
   }
@@ -93,22 +91,15 @@ size_t CommandRelay::unpersistedExcept(const uint8_t mac[kMacSize]) const {
 }
 
 int CommandRelay::pickLogSlot() const {
-  // A free slot first. Then the oldest record of a command that is done and whose result was passed on already, because the backend does not send that
-  // command again. A record of a command that was sent and has no answer, or that is queued, or whose result still waits, is never taken.
-  int oldest = -1;
+  // Only a free slot. A record is never taken before it is forgotten, which is when the life of its command and the time that a plug remembers its number
+  // are over, because the number of a record that is gone could be given to a new command while the plug still holds it, and then the plug would not run
+  // the new command. The cost is that a burst of commands can fill the log, and then a new command is refused until the oldest records are forgotten.
   for (size_t i = 0; i < kCommandLogSlots; i++) {
     if (records_[i].state == CommandState::Free) {
       return static_cast<int>(i);
     }
-    const bool finished = records_[i].state == CommandState::Done || records_[i].state == CommandState::Failed;
-    if (!finished || findPending(records_[i].id) >= 0 || resultWaiting(records_[i].id)) {
-      continue;
-    }
-    if (oldest < 0 || records_[i].expiresAt < records_[oldest].expiresAt) {
-      oldest = static_cast<int>(i);
-    }
   }
-  return oldest;
+  return -1;
 }
 
 bool CommandRelay::numberInUse(uint16_t number) const {
@@ -180,6 +171,11 @@ SubmitResult CommandRelay::submit(uint32_t nowMs, uint32_t serverTime, const cha
     return SubmitResult::Duplicate;
   }
 
+  // A result for this id waits for a batch already, an answer about an unknown node or the result of a run. The backend lists the command until it gets
+  // that result, so the command must not run now, for example because its node paired meanwhile, and change the answer that is on its way.
+  if (resultWaiting(id) && findLog(id) < 0) {
+    return SubmitResult::AlreadyRan;
+  }
   const int logged = findLog(id);
   if (logged >= 0 && records_[logged].state != CommandState::Sent) {
     pushResult(id, records_[logged].state == CommandState::Done, false);

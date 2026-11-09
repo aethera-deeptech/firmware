@@ -321,8 +321,8 @@ void test_a_command_for_an_unknown_node_or_with_a_bad_id_is_refused_without_a_ch
   TEST_ASSERT_EQUAL_INT(result(SubmitResult::BadId), result(submit(rig, 0, "a b", plug)));
   TEST_ASSERT_EQUAL_INT(result(SubmitResult::BadId), result(submit(rig, 0, "abcdefghijabcdefghijabcdefghijabcdefg", plug)));
   TEST_ASSERT_EQUAL_INT(result(SubmitResult::BadId), result(submit(rig, 0, nullptr, plug)));
-  // The same command again, as the backend sends it until the result is reported, does not make a second result.
-  TEST_ASSERT_EQUAL_INT(result(SubmitResult::UnknownNode), result(submit(rig, 0, "cmd-1", nullptr)));
+  // The same command again, as the backend sends it until the result is reported, only finds its result that waits, and makes no second one.
+  TEST_ASSERT_EQUAL_INT(result(SubmitResult::AlreadyRan), result(submit(rig, 0, "cmd-1", nullptr)));
   TEST_ASSERT_EQUAL_UINT(1, rig.relay.resultCount());
   // A bad id gets no result, because it is not safe to write into the JSON.
   TEST_ASSERT_EQUAL_INT(result(SubmitResult::Queued), result(submit(rig, 0, "abcdefghijabcdefghijabcdefghijabcdef", plug)));
@@ -538,7 +538,7 @@ void test_a_batch_takes_sixty_four_results_and_the_rest_waits_and_drop_keeps_the
   TEST_ASSERT_EQUAL_UINT(0, rig.relay.resultCount());
 }
 
-void test_a_full_log_refuses_a_new_command_until_the_results_of_finished_ones_are_passed_on() {
+void test_a_full_log_refuses_a_new_command_until_the_records_are_forgotten_whatever_happened_to_their_results() {
   Rig rig;
   char plug[kNodeIdSize];
   pairPlug(rig, 1, plug);
@@ -547,17 +547,42 @@ void test_a_full_log_refuses_a_new_command_until_the_results_of_finished_ones_ar
     snprintf(id, sizeof(id), "c%u", static_cast<unsigned>(i));
     finishCommand(rig, 1, id, kExpires + i, 10 + i);
   }
-  // Every record is of a command that is done, and every result still waits, so no slot may be taken.
   TEST_ASSERT_EQUAL_INT(result(SubmitResult::Full), result(submit(rig, 0, "next-1", plug)));
   TEST_ASSERT_EQUAL_UINT(0, rig.relay.pendingCount());
-  // After the batch that carried 64 of them is acknowledged, their slots may be taken, the oldest first.
+  // Passing the results on does not free a slot, because a plug may still hold the numbers.
   rig.relay.dropResults(kMaxBatchResults);
-  TEST_ASSERT_EQUAL_INT(result(SubmitResult::Queued), result(submit(rig, 0, "next-1", plug)));
+  TEST_ASSERT_EQUAL_INT(result(SubmitResult::Full), result(submit(rig, 0, "next-1", plug)));
+  // When the time of the service is past the end of the first commands and the reserve of their numbers, those records are forgotten, and only those
+  // whose results were passed on. The records whose result still waits stay.
+  const uint32_t later = kExpires + 10 + kNumberReserveSeconds + 1;
+  TEST_ASSERT_EQUAL_INT(result(SubmitResult::Queued), result(rig.relay.submit(0, later, "next-1", plug, true, later + 100)));
   rig.relay.onEvent(30, telemetry(1, 500));
-  // The record of the oldest dropped result, which was in slot 0, is the one that went. The next ones are still there.
   TEST_ASSERT_EQUAL_STRING("next-1", rig.log.slots[0].id);
   TEST_ASSERT_EQUAL_STRING("c1", rig.log.slots[1].id);
   TEST_ASSERT_EQUAL_INT(static_cast<int>(CommandState::Sent), static_cast<int>(rig.log.slots[0].state));
+  TEST_ASSERT_EQUAL_STRING("c70", rig.log.slots[70].id);
+}
+
+void test_a_command_whose_unknown_node_result_waits_is_not_run_when_the_node_pairs_meanwhile() {
+  Rig rig;
+  char plug[kNodeIdSize];
+  pairPlug(rig, 1, plug);
+  uint8_t mac[kMacSize];
+  macOfNumber(1, mac);
+  TEST_ASSERT_TRUE(rig.registry.unpair(mac));
+  TEST_ASSERT_EQUAL_INT(result(SubmitResult::UnknownNode), result(submit(rig, 0, "cmd-1", plug)));
+  TEST_ASSERT_EQUAL_UINT(1, rig.relay.resultCount());
+  // The node pairs again while the failed result is on its way, and the backend lists the command again.
+  char again[kNodeIdSize];
+  pairPlug(rig, 1, again);
+  TEST_ASSERT_EQUAL_INT(result(SubmitResult::AlreadyRan), result(submit(rig, 100, "cmd-1", plug)));
+  TEST_ASSERT_EQUAL_UINT(0, rig.relay.pendingCount());
+  rig.relay.onEvent(200, telemetry(1, 5));
+  TEST_ASSERT_EQUAL_UINT(0, rig.sender.count);
+  TEST_ASSERT_FALSE(rig.relay.results()[0].ok);
+  // After the result was passed on, the backend lists nothing more, and a new id for the plug is a new command.
+  rig.relay.dropResults(1);
+  TEST_ASSERT_EQUAL_INT(result(SubmitResult::Queued), result(submit(rig, 300, "cmd-2", plug)));
 }
 
 void test_records_of_commands_that_were_sent_before_a_restart_are_never_reused_for_a_new_command() {
@@ -690,6 +715,8 @@ void test_a_record_whose_result_still_waits_is_kept_after_its_command_and_its_nu
   rig.relay.forgetEnded(later);
   TEST_ASSERT_EQUAL_STRING("ran-1", rig.log.slots[0].id);
   TEST_ASSERT_EQUAL_UINT(1, rig.relay.resultCount());
+  // The relay still knows the command, so the backend that lists it again only gets its result and the plug is not asked.
+  TEST_ASSERT_EQUAL_INT(result(SubmitResult::AlreadyRan), result(rig.relay.submit(0, later, "ran-1", plug, true, later + 100)));
   // After the batch is acknowledged the record is not needed any more, and the next call forgets it.
   rig.relay.dropResults(1);
   rig.relay.forgetEnded(later);
@@ -785,7 +812,8 @@ int main() {
   RUN_TEST(test_a_radio_that_refuses_the_frame_does_not_stop_the_resends);
   RUN_TEST(test_the_queue_holds_sixteen_commands_and_a_command_for_a_queued_plug_still_fits);
   RUN_TEST(test_a_batch_takes_sixty_four_results_and_the_rest_waits_and_drop_keeps_the_newer);
-  RUN_TEST(test_a_full_log_refuses_a_new_command_until_the_results_of_finished_ones_are_passed_on);
+  RUN_TEST(test_a_full_log_refuses_a_new_command_until_the_records_are_forgotten_whatever_happened_to_their_results);
+  RUN_TEST(test_a_command_whose_unknown_node_result_waits_is_not_run_when_the_node_pairs_meanwhile);
   RUN_TEST(test_records_of_commands_that_were_sent_before_a_restart_are_never_reused_for_a_new_command);
   RUN_TEST(test_a_number_stays_reserved_after_its_command_ended_and_the_number_zero_is_never_used);
   RUN_TEST(test_the_last_free_log_slot_is_promised_to_one_queued_command_only);

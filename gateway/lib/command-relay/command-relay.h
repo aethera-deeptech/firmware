@@ -16,8 +16,8 @@ namespace wattlink {
 // How many commands wait or are in flight at the same time. A command lives 10 minutes at most.
 constexpr size_t kMaxQueuedCommands = 16;
 // How many records the log keeps, enough for a command of every node and every queue place. A record is kept for the life of its command and then for
-// kNumberReserveSeconds more, because a plug remembers the number of a command for 10 minutes after it ran it. A slot is reused only when its
-// record is free, or when the command is done and its result is no longer waiting for a batch. A new command is refused when no slot can be used.
+// kNumberReserveSeconds more, because a plug remembers the number of a command for 10 minutes after it ran it. A slot is reused only when its record is
+// forgotten, and a new command is refused when no slot is free, so a number is never given again while a plug may still hold it.
 constexpr size_t kCommandLogSlots = kMaxNodes + kMaxQueuedCommands;
 constexpr uint32_t kNumberReserveSeconds = 600;
 // How many results wait for a batch at most. Every record of the log can have one, and the answers about unknown nodes have none in the log, so they
