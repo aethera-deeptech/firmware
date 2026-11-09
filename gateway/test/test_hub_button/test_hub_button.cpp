@@ -4,6 +4,7 @@
 
 using wattlink::ButtonClassifier;
 using wattlink::ButtonEvent;
+using wattlink::kNewCodeHoldMs;
 
 namespace {
 
@@ -11,6 +12,8 @@ struct Counts {
   int pairing = 0;
   int portal = 0;
   int portalDuringHold = 0;
+  int newCode = 0;
+  int newCodeDuringHold = 0;
 };
 
 void tally(ButtonEvent event, Counts &counts) {
@@ -18,6 +21,8 @@ void tally(ButtonEvent event, Counts &counts) {
     counts.pairing++;
   } else if (event == ButtonEvent::Portal) {
     counts.portal++;
+  } else if (event == ButtonEvent::NewCode) {
+    counts.newCode++;
   }
 }
 
@@ -29,6 +34,9 @@ Counts press(ButtonClassifier &button, uint32_t startMs, uint32_t heldMs) {
     tally(event, counts);
     if (event == ButtonEvent::Portal) {
       counts.portalDuringHold++;
+    }
+    if (event == ButtonEvent::NewCode) {
+      counts.newCodeDuringHold++;
     }
   }
   tally(button.update(false, startMs + heldMs), counts);
@@ -73,11 +81,12 @@ void test_press_just_under_3_seconds_is_still_a_short_press() {
   TEST_ASSERT_EQUAL_INT(0, counts.portal);
 }
 
-void test_hold_starts_the_portal_while_held() {
+void test_hold_of_3_seconds_or_more_starts_the_portal_on_release_and_not_while_held() {
   ButtonClassifier button = started();
   const Counts counts = press(button, 1000, 3500);
   TEST_ASSERT_EQUAL_INT(1, counts.portal);
-  TEST_ASSERT_EQUAL_INT(1, counts.portalDuringHold);
+  TEST_ASSERT_EQUAL_INT(0, counts.portalDuringHold);
+  TEST_ASSERT_EQUAL_INT(0, counts.newCode);
 }
 
 void test_long_hold_never_opens_pairing() {
@@ -85,6 +94,7 @@ void test_long_hold_never_opens_pairing() {
   const Counts counts = press(button, 1000, 8000);
   TEST_ASSERT_EQUAL_INT(0, counts.pairing);
   TEST_ASSERT_EQUAL_INT(1, counts.portal);
+  TEST_ASSERT_EQUAL_INT(0, counts.newCode);
 }
 
 void test_hold_seen_only_on_release_counts_as_the_portal() {
@@ -142,11 +152,69 @@ void test_release_at_exactly_3000_ms_counts_as_the_portal() {
   TEST_ASSERT_EQUAL_INT(1, counts.portal);
 }
 
-void test_hold_across_the_wrap_starts_the_portal_while_held() {
+void test_hold_across_the_wrap_starts_the_portal_on_release() {
   ButtonClassifier button = started();
   const Counts counts = press(button, 0xFFFFFFFFu - 1500, 3500);
-  TEST_ASSERT_EQUAL_INT(1, counts.portalDuringHold);
+  TEST_ASSERT_EQUAL_INT(1, counts.portal);
+  TEST_ASSERT_EQUAL_INT(0, counts.portalDuringHold);
   TEST_ASSERT_EQUAL_INT(0, counts.pairing);
+}
+
+void test_hold_of_10_seconds_asks_for_a_new_code_while_held_and_never_starts_the_portal() {
+  ButtonClassifier button = started();
+  const Counts counts = press(button, 1000, 12000);
+  TEST_ASSERT_EQUAL_INT(1, counts.newCode);
+  TEST_ASSERT_EQUAL_INT(1, counts.newCodeDuringHold);
+  TEST_ASSERT_EQUAL_INT(0, counts.portal);
+  TEST_ASSERT_EQUAL_INT(0, counts.pairing);
+}
+
+void test_hold_of_9990_ms_is_still_the_portal_and_exactly_10000_ms_is_the_new_code() {
+  ButtonClassifier button = started();
+  const Counts below = press(button, 1000, 9990);
+  TEST_ASSERT_EQUAL_INT(1, below.portal);
+  TEST_ASSERT_EQUAL_INT(0, below.newCode);
+  const Counts exact = press(button, 20000, 10000);
+  TEST_ASSERT_EQUAL_INT(0, exact.portal);
+  TEST_ASSERT_EQUAL_INT(1, exact.newCode);
+}
+
+void test_hold_of_10_seconds_seen_only_on_release_counts_as_the_new_code() {
+  ButtonClassifier button = started();
+  button.update(true, 1000);
+  TEST_ASSERT_EQUAL(ButtonEvent::NewCode, button.update(false, 15000));
+}
+
+void test_the_new_code_comes_once_and_the_next_press_is_normal() {
+  ButtonClassifier button = started();
+  const Counts hold = press(button, 1000, 15000);
+  const Counts next = press(button, 20000, 200);
+  TEST_ASSERT_EQUAL_INT(1, hold.newCode);
+  TEST_ASSERT_EQUAL_INT(1, next.pairing);
+  TEST_ASSERT_EQUAL_INT(0, next.newCode);
+}
+
+void test_hold_of_10_seconds_across_the_wrap_asks_for_a_new_code() {
+  ButtonClassifier button = started();
+  const Counts counts = press(button, 0xFFFFFFFFu - 4000, 11000);
+  TEST_ASSERT_EQUAL_INT(1, counts.newCodeDuringHold);
+  TEST_ASSERT_EQUAL_INT(0, counts.portal);
+}
+
+void test_the_time_held_is_given_for_the_display_and_is_zero_when_the_button_is_not_held() {
+  ButtonClassifier button = started();
+  TEST_ASSERT_EQUAL_UINT32(0, button.heldMs(500));
+  button.update(true, 1000);
+  TEST_ASSERT_EQUAL_UINT32(0, button.heldMs(1000));
+  TEST_ASSERT_EQUAL_UINT32(2500, button.heldMs(3500));
+  button.update(false, 3500);
+  TEST_ASSERT_EQUAL_UINT32(0, button.heldMs(3600));
+  // Across the wrap, and zero after an event that came while the button was held.
+  ButtonClassifier other = started();
+  other.update(true, 0xFFFFFFFFu - 100);
+  TEST_ASSERT_EQUAL_UINT32(400, other.heldMs(299));
+  other.update(true, 0xFFFFFFFFu - 100 + kNewCodeHoldMs);
+  TEST_ASSERT_EQUAL_UINT32(0, other.heldMs(0xFFFFFFFFu - 100 + kNewCodeHoldMs + 5));
 }
 
 void test_short_press_after_a_portal_hold_gives_pairing() {
@@ -164,7 +232,7 @@ int main(int, char **) {
   RUN_TEST(test_press_under_50_ms_is_bounce);
   RUN_TEST(test_press_of_exactly_50_ms_is_a_short_press);
   RUN_TEST(test_press_just_under_3_seconds_is_still_a_short_press);
-  RUN_TEST(test_hold_starts_the_portal_while_held);
+  RUN_TEST(test_hold_of_3_seconds_or_more_starts_the_portal_on_release_and_not_while_held);
   RUN_TEST(test_long_hold_never_opens_pairing);
   RUN_TEST(test_hold_seen_only_on_release_counts_as_the_portal);
   RUN_TEST(test_button_down_at_start_up_is_ignored_until_released);
@@ -173,7 +241,13 @@ int main(int, char **) {
   RUN_TEST(test_press_of_49_ms_is_bounce);
   RUN_TEST(test_press_of_2999_ms_is_a_short_press);
   RUN_TEST(test_release_at_exactly_3000_ms_counts_as_the_portal);
-  RUN_TEST(test_hold_across_the_wrap_starts_the_portal_while_held);
+  RUN_TEST(test_hold_across_the_wrap_starts_the_portal_on_release);
+  RUN_TEST(test_hold_of_10_seconds_asks_for_a_new_code_while_held_and_never_starts_the_portal);
+  RUN_TEST(test_hold_of_9990_ms_is_still_the_portal_and_exactly_10000_ms_is_the_new_code);
+  RUN_TEST(test_hold_of_10_seconds_seen_only_on_release_counts_as_the_new_code);
+  RUN_TEST(test_the_new_code_comes_once_and_the_next_press_is_normal);
+  RUN_TEST(test_hold_of_10_seconds_across_the_wrap_asks_for_a_new_code);
+  RUN_TEST(test_the_time_held_is_given_for_the_display_and_is_zero_when_the_button_is_not_held);
   RUN_TEST(test_short_press_after_a_portal_hold_gives_pairing);
   return UNITY_END();
 }

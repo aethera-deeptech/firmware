@@ -22,14 +22,19 @@ ButtonEvent ButtonClassifier::update(bool pressed, uint32_t nowMs) {
       // The subtraction stays right when the millisecond counter wraps.
       const uint32_t heldMs = nowMs - pressedAtMs_;
       if (pressed) {
-        if (heldMs >= kPortalHoldMs) {
+        // The portal waits for the release, because a hold of 10 seconds must not start it on the way.
+        if (heldMs >= kNewCodeHoldMs) {
           state_ = State::Used;
-          return ButtonEvent::Portal;
+          return ButtonEvent::NewCode;
         }
         return ButtonEvent::None;
       }
       state_ = State::Idle;
-      // A release after 3 seconds that no reading saw while the button was held still counts as the hold, never as a short press.
+      // A release after 10 seconds that no reading saw while the button was held still counts as that hold, and one after 3 seconds as the portal. Neither is
+      // ever a short press.
+      if (heldMs >= kNewCodeHoldMs) {
+        return ButtonEvent::NewCode;
+      }
       if (heldMs >= kPortalHoldMs) {
         return ButtonEvent::Portal;
       }
