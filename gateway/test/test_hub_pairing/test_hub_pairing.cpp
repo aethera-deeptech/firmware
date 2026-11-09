@@ -304,7 +304,7 @@ void test_only_failed_key_exchanges_count_and_a_good_request_clears_the_count() 
   rig.knobs.failAgree = false;
   TEST_ASSERT_EQUAL_INT(result(RequestResult::Accepted), result(ask(rig, node, 60, &outcome)));
   TEST_ASSERT_TRUE(rig.window.isPairing(60));
-  // The pairing is cancelled, a new window opens, and the earlier failures do not count in it.
+  // The pairing is cancelled with close(), which clears the count too, and a new window opens.
   rig.pairing.close();
   rig.window.press(1000);
   rig.knobs.failAgree = true;
@@ -312,6 +312,24 @@ void test_only_failed_key_exchanges_count_and_a_good_request_clears_the_count() 
     TEST_ASSERT_EQUAL_INT(result(RequestResult::CryptoFailed), result(ask(rig, node, 1010 + i, &outcome)));
   }
   TEST_ASSERT_TRUE(rig.window.isOpen(1050));
+}
+
+void test_a_press_right_after_the_closing_failure_opens_a_window_with_a_clean_count() {
+  Rig rig;
+  const NodeSim node = makeNode(1);
+  rig.knobs.failAgree = true;
+  RequestOutcome outcome;
+  rig.window.press(0);
+  for (uint32_t i = 0; i < kMaxFailedExchanges; i++) {
+    TEST_ASSERT_EQUAL_INT(result(RequestResult::CryptoFailed), result(ask(rig, node, 10 + i, &outcome)));
+  }
+  TEST_ASSERT_FALSE(rig.window.isOpen(20));
+  // No update() and no request runs between the close and the press, as in a pass of the loop where the owner presses at that moment.
+  rig.window.press(30);
+  for (uint32_t i = 0; i + 1 < kMaxFailedExchanges; i++) {
+    TEST_ASSERT_EQUAL_INT(result(RequestResult::CryptoFailed), result(ask(rig, node, 40 + i, &outcome)));
+    TEST_ASSERT_TRUE(rig.window.isOpen(40 + i));
+  }
 }
 
 void test_a_frame_that_does_not_verify_changes_nothing_and_a_good_frame_still_pairs() {
@@ -640,6 +658,7 @@ int main() {
   RUN_TEST(test_a_failure_of_the_key_exchange_changes_nothing_and_leaves_the_window_open);
   RUN_TEST(test_three_failed_key_exchanges_close_the_window_and_the_next_press_starts_the_count_again);
   RUN_TEST(test_only_failed_key_exchanges_count_and_a_good_request_clears_the_count);
+  RUN_TEST(test_a_press_right_after_the_closing_failure_opens_a_window_with_a_clean_count);
   RUN_TEST(test_a_frame_that_does_not_verify_changes_nothing_and_a_good_frame_still_pairs);
   RUN_TEST(test_a_frame_with_a_key_that_is_not_the_new_key_does_not_pair);
   RUN_TEST(test_a_frame_from_another_address_is_not_pending_and_the_pairing_goes_on);

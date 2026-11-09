@@ -39,6 +39,7 @@ void HubPairing::update(uint32_t nowMs) {
 
 void HubPairing::close() {
   window_.close();
+  failedExchanges_ = 0;
   wipePending();
 }
 
@@ -93,8 +94,10 @@ RequestResult HubPairing::onPairRequest(uint32_t nowMs, const uint8_t mac[kMacSi
     wipe(key, sizeof(key));
     memset(outcome->acceptPayload, 0, sizeof(outcome->acceptPayload));
     // After the limit the window closes. Nothing is pending here, because a pending pairing makes the window Pairing and a request Busy.
+    // The count is cleared here too, so a press before the next update() does not open a window with the old count.
     if (++failedExchanges_ >= kMaxFailedExchanges) {
       window_.close();
+      failedExchanges_ = 0;
     }
     return RequestResult::CryptoFailed;
   }
