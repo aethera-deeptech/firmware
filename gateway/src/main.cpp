@@ -4,6 +4,7 @@
 #include "boot-counter.h"
 #include "config.h"
 #include "crypto-selftest.h"
+#include "espnow-radio.h"
 #include "hub-button.h"
 #include "hub-link.h"
 #include "hub-pairing.h"
@@ -35,7 +36,13 @@ static uint32_t hubBootId = 0;
 static_assert(static_cast<uint8_t>(wattlink::NodeKind::Plug) == wattlink::kKindPlug, "the plug kind of the registry matches the frames");
 static_assert(static_cast<uint8_t>(wattlink::NodeKind::Clamp) == wattlink::kKindClamp, "the clamp kind of the registry matches the frames");
 static wattlink::Portal portal(settings, oled);
-static wattlink::WifiClient wifi(settings);
+// ESP-NOW follows the Wi-Fi client, which starts it when the radio goes on and stops it before the radio goes off.
+static wattlink::EspNowRadio radio;
+static wattlink::WifiClient wifi(settings, &radio);
+// The counters that the last ESP-NOW log line showed, and the time of that line. The line is printed only when a counter has moved.
+static uint32_t lastReceivedLogged = 0;
+static uint32_t lastDroppedLogged = 0;
+static uint32_t lastRadioLogMs = 0;
 static wattlink::PairingWindow pairing;
 // The seconds that the pairing screen showed last, so it is drawn again only when the number changes. -1 means that it is not on screen.
 static int lastPairingSeconds = -1;
@@ -82,6 +89,25 @@ static void drawScreen(uint32_t now) {
     return;
   }
   drawHome(false);
+}
+
+// The frames of the nodes wait in the queue of the radio. HubLink is not wired in yet, so they are counted and dropped here. One line shows the
+// counters at most every 5 seconds and only when they moved.
+static void drainRadio(uint32_t now) {
+  wattlink::EspNowRadio::Received frame;
+  while (radio.receive(&frame)) {
+    // Counted by the callback already, and dropped here until HubLink reads the queue.
+  }
+  if (now - lastRadioLogMs < 5000) {
+    return;
+  }
+  if (radio.received() != lastReceivedLogged || radio.dropped() != lastDroppedLogged) {
+    lastReceivedLogged = radio.received();
+    lastDroppedLogged = radio.dropped();
+    lastRadioLogMs = now;
+    Serial.printf("ESP-NOW: %lu frames received, %lu dropped by a full queue\n", static_cast<unsigned long>(lastReceivedLogged),
+                  static_cast<unsigned long>(lastDroppedLogged));
+  }
 }
 
 void setup() {
@@ -144,6 +170,7 @@ void loop() {
   const bool pressed = digitalRead(config::kHubButtonPin) == LOW;
 
   wifi.update(now);
+  drainRadio(now);
   drawScreen(now);
 
   switch (button.update(pressed, now)) {

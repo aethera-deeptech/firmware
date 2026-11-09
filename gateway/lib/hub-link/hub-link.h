@@ -21,7 +21,8 @@ namespace wattlink {
 constexpr uint32_t kHelloWindowMs = 1000;
 constexpr uint8_t kHelloPerWindow = 5;
 
-// The way out to the radio. The implementation adds a temporary peer for the send and removes it at once, because the link layer holds few peers.
+// The way out to the radio. The implementation adds a temporary peer for the send and removes it when the send is done, because the link layer holds few peers.
+// A send may block the calling task for a short time. On the chip it waits 50 ms at most for the report of the link layer.
 class RadioPort {
  public:
   virtual ~RadioPort() = default;
