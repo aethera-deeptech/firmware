@@ -146,7 +146,9 @@ static void serviceRadio(uint32_t now) {
   wattlink::EspNowRadio::Received frame;
   for (int i = 0; i < kFramesPerPass && radio.receive(&frame); i++) {
     if (hubLink != nullptr) {
-      logLinkEvent(hubLink->onFrame(now, frame.mac, frame.data, frame.length));
+      // The clock is read for each frame, because a frame before this one may have waited for a send, and the time of a frame is the time of its
+      // arrival for the window, the limit of HELLO answers and the capture time of its samples.
+      logLinkEvent(hubLink->onFrame(millis(), frame.mac, frame.data, frame.length));
     }
   }
   if (hubPairing != nullptr) {
@@ -154,7 +156,7 @@ static void serviceRadio(uint32_t now) {
     if (!radio.active()) {
       hubPairing->close();
     }
-    hubPairing->update(now);
+    hubPairing->update(millis());
   }
   if (now - lastExpireMs >= kExpireEveryMs) {
     lastExpireMs = now;
