@@ -1,0 +1,7 @@
+{
+  "name": "hub-link",
+  "version": "0.1.0",
+  "description": "What the hub does with a frame that arrives from a node, and the frames that it sends back",
+  "frameworks": "*",
+  "platforms": "*"
+}

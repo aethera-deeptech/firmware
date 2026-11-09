@@ -2,12 +2,14 @@
 
 #include <string.h>
 
+#include "byte-order.h"
 #include "secure-wipe.h"
 
 namespace wattlink {
 
-HubPairing::HubPairing(PairingWindow &window, NodeRegistry &registry, const HubCrypto &crypto, const uint8_t hubMac[kMacSize])
-    : window_(window), registry_(registry), crypto_(crypto), pending_(false), pendingKind_(0) {
+HubPairing::HubPairing(PairingWindow &window, NodeRegistry &registry, const HubCrypto &crypto, const uint8_t hubMac[kMacSize],
+                       uint32_t hubBootId)
+    : window_(window), registry_(registry), crypto_(crypto), hubBootId_(hubBootId), pending_(false), pendingKind_(0) {
   memcpy(hubMac_, hubMac, kMacSize);
   memset(pendingMac_, 0, sizeof(pendingMac_));
   memset(pendingKey_, 0, sizeof(pendingKey_));
@@ -111,7 +113,7 @@ FirstFrameResult HubPairing::onFrame(uint32_t nowMs, const uint8_t mac[kMacSize]
   size_t payloadLength = 0;
   if (!openFrame(crypto_.open, crypto_.context, pendingKey_, Direction::NodeToHub, frame, frameLength, &header, out->payload,
                  sizeof(out->payload), &payloadLength) ||
-      header.type != FrameType::Telemetry || header.bootId == 0) {
+      header.type != FrameType::Telemetry || header.bootId == 0 || payloadLength < sizeof(uint32_t) || getU32(out->payload) != hubBootId_) {
     memset(out->payload, 0, sizeof(out->payload));
     return FirstFrameResult::BadFrame;
   }

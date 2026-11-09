@@ -29,6 +29,7 @@ struct HubCrypto {
   void *context;
   HmacSha256 hmac;
   AesGcmOpen open;
+  AesGcmSeal seal;  // HubPairing does not seal, and HubLink does
   X25519Generate generate;
   X25519Agree agree;
 };
@@ -67,7 +68,9 @@ struct FirstFrame {
 
 class HubPairing {
  public:
-  HubPairing(PairingWindow &window, NodeRegistry &registry, const HubCrypto &crypto, const uint8_t hubMac[kMacSize]);
+  // hubBootId is the boot number of the hub for this start. The first TELEMETRY frame must carry it, because a node that took it from the header of
+  // PAIR_ACCEPT knows it, and a frame that does not is not committed.
+  HubPairing(PairingWindow &window, NodeRegistry &registry, const HubCrypto &crypto, const uint8_t hubMac[kMacSize], uint32_t hubBootId);
   ~HubPairing();
 
   // A copy would keep a second copy of the pending key that close() and update() cannot wipe.
@@ -91,6 +94,9 @@ class HubPairing {
 
   bool pending() const { return pending_; }
 
+  // The boot number that the first TELEMETRY frame must carry. HubLink reads it from here, so the two never hold different values.
+  uint32_t hubBootId() const { return hubBootId_; }
+
  private:
   void wipePending();
 
@@ -98,6 +104,7 @@ class HubPairing {
   NodeRegistry &registry_;
   HubCrypto crypto_;
   uint8_t hubMac_[kMacSize];
+  uint32_t hubBootId_;
 
   bool pending_;
   uint8_t pendingMac_[kMacSize];
