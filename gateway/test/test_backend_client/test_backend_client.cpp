@@ -161,6 +161,9 @@ class FakeClientStore : public ClientStore {
   bool enrolled() override { return enrolledFlag; }
   bool setEnrolled(bool value) override {
     flagWrites++;
+    if (failSetEnrolled) {
+      return false;
+    }
     enrolledFlag = value;
     return true;
   }
@@ -169,6 +172,7 @@ class FakeClientStore : public ClientStore {
   bool noKey = false;
   bool failEnsure = false;
   bool failRenew = false;
+  bool failSetEnrolled = false;
   bool enrolledFlag = false;
   int ensures = 0;
   int renews = 0;
@@ -396,11 +400,14 @@ void test_a_code_that_runs_out_is_replaced_by_a_new_one() {
   Rig rig;
   rig.client.begin(0);
   rig.http.reply(201, enrollAnswer("AAAAAAAA", 60));
-  // The polls at 5, 10 and so on up to 55 seconds, and then the code is over.
-  for (int i = 0; i < 11; i++) {
+  // The polls at 5, 10 and so on up to 55 seconds, one last poll when the code runs out, and then a new code.
+  for (int i = 0; i < 12; i++) {
     rig.http.reply(202);
   }
   rig.http.reply(201, enrollAnswer("BBBBBBBB", 60));
+  for (int i = 0; i < 20; i++) {
+    rig.http.reply(202);
+  }
   rig.run(0, 59000);
   TEST_ASSERT_EQUAL_STRING("AAAAAAAA", rig.client.claimCode());
   rig.run(59100, 62000);
@@ -872,17 +879,36 @@ void test_an_answer_429_to_a_batch_waits_and_sends_the_same_batch() {
   TEST_ASSERT_TRUE(contains(rig.http.requests[1].body, "\"seq\":1,"));
 }
 
-void test_five_answers_409_in_a_row_make_the_client_wait_like_after_a_failure() {
+void test_from_the_fifth_answer_409_in_a_row_the_pause_grows_like_after_a_failure() {
   Rig rig;
   makeReady(rig);
-  for (int i = 0; i < 6; i++) {
+  for (int i = 0; i < 12; i++) {
     rig.http.reply(409, expected(static_cast<uint32_t>(10 + i)));
   }
-  rig.run(1000, 29000);
-  TEST_ASSERT_EQUAL_UINT(5, rig.http.requests.size());
-  // The fifth answer starts a pause of 5 seconds, which is longer than the minimum gap of 6 seconds minus nothing, so the sixth request comes later.
-  rig.run(29100, 80000);
-  TEST_ASSERT_TRUE(rig.http.requests.size() >= 6);
+  uint32_t t = 1000;
+  std::deque<uint32_t> starts;
+  size_t seen = 0;
+  while (t < 400000 && seen < 9) {
+    const size_t before = rig.http.requests.size();
+    rig.client.update(t, true);
+    if (rig.http.requests.size() > before) {
+      starts.push_back(t);
+      seen++;
+    }
+    t += 100;
+  }
+  TEST_ASSERT_EQUAL_UINT(9, seen);
+  // The first four answers are followed by the minimum gap of 6 seconds.
+  for (size_t i = 1; i <= 4; i++) {
+    const uint32_t gap = starts[i] - starts[i - 1];
+    TEST_ASSERT_TRUE(gap >= kMinBatchGapMs && gap <= kMinBatchGapMs + 300);
+  }
+  // The fifth answer starts a pause of 5 seconds, which the gap of 6 seconds covers, and then the pause doubles.
+  const uint32_t gaps[] = {kMinBatchGapMs, 10000, 20000, 40000};
+  for (size_t i = 0; i < 4; i++) {
+    const uint32_t gap = starts[i + 5] - starts[i + 4];
+    TEST_ASSERT_TRUE(gap >= gaps[i] && gap <= gaps[i] + 300);
+  }
 }
 
 void test_an_answer_409_without_a_number_is_a_bad_answer() {
@@ -987,6 +1013,259 @@ void test_the_key_is_never_in_a_body_or_a_path() {
   }
 }
 
+void test_a_probe_that_cannot_send_a_batch_gives_up_after_a_minute_and_asks_for_a_new_code() {
+  Rig rig;
+  rig.client.begin(0);
+  rig.http.reply(201, enrollAnswer("AAAAAAAA"));
+  rig.http.reply(404);
+  rig.http.reply(201, enrollAnswer("FFFFFFFF"));
+  // No paired node and no clock, so no batch can test the key.
+  rig.run(0, 5400);
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(ClientState::Running), static_cast<int>(rig.client.state()));
+  TEST_ASSERT_TRUE(rig.hasEvent(ClientEventKind::ClaimUnknown));
+  rig.run(5500, 64500);
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(ClientState::Running), static_cast<int>(rig.client.state()));
+  rig.run(64600, 66000);
+  TEST_ASSERT_EQUAL_STRING("FFFFFFFF", rig.client.claimCode());
+  TEST_ASSERT_FALSE(rig.store.enrolledFlag);
+}
+
+void test_the_poll_answer_404_is_not_reported_as_a_claim() {
+  Rig rig;
+  rig.client.begin(0);
+  rig.http.reply(201, enrollAnswer());
+  rig.http.reply(404);
+  rig.run(0, 5600);
+  ClientEvent e;
+  while (rig.client.takeEvent(&e)) {
+    TEST_ASSERT_TRUE(e.kind != ClientEventKind::Claimed);
+  }
+}
+
+void test_a_link_that_was_down_for_more_than_25_days_does_not_hold_the_client_back() {
+  Rig rig;
+  makeReady(rig);
+  rig.builder.onExpectedSeq(1);
+  rig.http.reply(200, ack(1));
+  rig.run(1000, 1300);
+  TEST_ASSERT_EQUAL_UINT32(1, rig.client.batchesStored());
+  rig.addSample(2000, 1, 2);
+  // 26 days in steps of one hour, with no link.
+  uint32_t t = 2000;
+  for (int hour = 0; hour < 26 * 24; hour++) {
+    t += 3600000u;
+    rig.client.update(t, false);
+  }
+  rig.client.setUnixTime(t, kEpoch);
+  rig.http.reply(409, expected(2));
+  rig.run(t + 100, t + 1300);
+  TEST_ASSERT_TRUE(rig.http.requests.size() >= 2);
+}
+
+void test_the_timers_work_across_the_wrap_of_the_millisecond_counter() {
+  Rig rig;
+  const uint32_t base = 0xFFFFFFFFu - 30000u;
+  rig.client.begin(base);
+  rig.http.reply(201, enrollAnswer("AAAAAAAA", 60));
+  for (int i = 0; i < 12; i++) {
+    rig.http.reply(202);
+  }
+  rig.http.reply(201, enrollAnswer("BBBBBBBB", 60));
+  for (int i = 0; i < 20; i++) {
+    rig.http.reply(202);
+  }
+  for (uint32_t i = 0; i < 700; i++) {
+    rig.client.update(base + i * 100u, true);
+  }
+  TEST_ASSERT_EQUAL_STRING("BBBBBBBB", rig.client.claimCode());
+  TEST_ASSERT_TRUE(rig.hasEvent(ClientEventKind::CodeExpired));
+  // The polls were 5 seconds apart on both sides of the wrap.
+  size_t polls = 0;
+  for (const Seen &seen : rig.http.requests) {
+    polls += seen.method == HttpMethod::Get ? 1 : 0;
+  }
+  TEST_ASSERT_TRUE(polls >= 12);
+  // A watchdog and a pause across the wrap.
+  Rig other;
+  const uint32_t start = 0xFFFFFFFFu - 20000u;
+  makeReady(other, start);
+  other.builder.onExpectedSeq(1);
+  other.http.hang = true;
+  other.client.update(start, true);
+  for (uint32_t i = 1; i < 500; i++) {
+    other.client.update(start + i * 100u, true);
+  }
+  TEST_ASSERT_EQUAL_INT(1, other.http.cancels);
+}
+
+void test_an_owner_who_types_the_code_in_the_last_seconds_is_not_asked_for_a_second_code() {
+  Rig rig;
+  rig.client.begin(0);
+  rig.http.reply(201, enrollAnswer("AAAAAAAA", 60));
+  for (int i = 0; i < 11; i++) {
+    rig.http.reply(202);
+  }
+  rig.http.reply(200, "{\"gatewayId\":\"6f1c7e0a-0000-4000-8000-000000000001\"}");
+  rig.run(0, 62000);
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(ClientState::Running), static_cast<int>(rig.client.state()));
+  TEST_ASSERT_TRUE(rig.store.enrolledFlag);
+  TEST_ASSERT_FALSE(rig.hasEvent(ClientEventKind::CodeExpired));
+  size_t enrolls = 0;
+  for (const Seen &seen : rig.http.requests) {
+    enrolls += seen.path == "/device/v1/enroll" ? 1 : 0;
+  }
+  TEST_ASSERT_EQUAL_UINT(1, enrolls);
+}
+
+void test_a_final_poll_that_fails_still_ends_the_code() {
+  Rig rig;
+  rig.client.begin(0);
+  rig.http.reply(201, enrollAnswer("AAAAAAAA", 60));
+  for (int i = 0; i < 11; i++) {
+    rig.http.reply(202);
+  }
+  rig.http.fail(HttpFailure::Timeout);
+  rig.http.reply(201, enrollAnswer("CCCCCCCC", 60));
+  for (int i = 0; i < 20; i++) {
+    rig.http.reply(202);
+  }
+  rig.run(0, 70000);
+  TEST_ASSERT_TRUE(rig.hasEvent(ClientEventKind::CodeExpired));
+  TEST_ASSERT_EQUAL_STRING("CCCCCCCC", rig.client.claimCode());
+}
+
+void test_a_code_that_runs_out_does_not_write_the_flag_again() {
+  Rig rig;
+  rig.client.begin(0);
+  rig.http.reply(201, enrollAnswer("AAAAAAAA", 20));
+  for (int i = 0; i < 4; i++) {
+    rig.http.reply(202);
+  }
+  rig.http.reply(201, enrollAnswer("BBBBBBBB", 20));
+  for (int i = 0; i < 20; i++) {
+    rig.http.reply(202);
+  }
+  rig.run(0, 30000);
+  TEST_ASSERT_TRUE(rig.hasEvent(ClientEventKind::CodeExpired));
+  TEST_ASSERT_EQUAL_INT(0, rig.store.flagWrites);
+}
+
+void test_the_answers_that_blame_the_batch_drop_it_after_three_tries_and_a_413_counts_too() {
+  const int statuses[] = {400, 413, 415};
+  for (int status : statuses) {
+    Rig rig;
+    makeReady(rig);
+    rig.builder.onExpectedSeq(1);
+    for (int i = 0; i < 3; i++) {
+      rig.http.reply(status);
+    }
+    rig.run(1000, 90000);
+    TEST_ASSERT_EQUAL_UINT(3, rig.http.requests.size());
+    TEST_ASSERT_EQUAL_UINT(0, rig.samples.size());
+    TEST_ASSERT_TRUE(rig.hasEvent(ClientEventKind::BatchDropped));
+  }
+}
+
+void test_a_dropped_batch_keeps_the_results_and_the_next_batch_gets_a_new_number() {
+  Rig rig;
+  makeReady(rig);
+  rig.builder.onExpectedSeq(1);
+  rig.http.reply(200, ack(1, command("cmd-9", "PLUG-0000FF", "on")));
+  rig.run(1000, 1300);
+  TEST_ASSERT_EQUAL_UINT(1, rig.relay.resultCount());
+  rig.addSample(2000, 1, 2);
+  for (int i = 0; i < 3; i++) {
+    rig.http.reply(422);
+  }
+  rig.http.reply(409, expected(40));
+  rig.http.reply(200, ack(40));
+  rig.run(1400, 55000);
+  TEST_ASSERT_TRUE(rig.hasEvent(ClientEventKind::BatchDropped));
+  TEST_ASSERT_EQUAL_UINT(0, rig.samples.size());
+  TEST_ASSERT_EQUAL_UINT(1, rig.relay.resultCount());
+  rig.addSample(55000, 1, 3);
+  rig.run(55100, 150000);
+  TEST_ASSERT_TRUE(rig.http.requests.size() >= 6);
+  TEST_ASSERT_TRUE(contains(rig.http.requests.back().body, "\"seq\":40,"));
+  TEST_ASSERT_TRUE(contains(rig.http.requests.back().body, "\"id\":\"cmd-9\""));
+  TEST_ASSERT_EQUAL_UINT(0, rig.relay.resultCount());
+}
+
+void test_an_acknowledgement_below_the_number_of_the_batch_is_a_bad_answer() {
+  Rig rig;
+  makeReady(rig);
+  rig.builder.onExpectedSeq(5);
+  rig.http.reply(200, ack(4, command("cmd-1", "PLUG-0000FF", "on")));
+  rig.http.reply(200, ack(5));
+  rig.run(1000, 1300);
+  TEST_ASSERT_TRUE(rig.hasEvent(ClientEventKind::BadAnswer));
+  TEST_ASSERT_EQUAL_UINT32(0, rig.client.batchesStored());
+  TEST_ASSERT_EQUAL_UINT(1, rig.samples.size());
+  TEST_ASSERT_EQUAL_UINT(0, rig.relay.resultCount());
+  rig.run(1400, 8000);
+  TEST_ASSERT_EQUAL_UINT32(1, rig.client.batchesStored());
+}
+
+void test_a_builder_with_a_budget_above_the_buffer_is_refused() {
+  Rig rig;
+  BatchBuilder big(rig.samples, rig.registry);
+  BackendClient client(rig.http, rig.store, big, rig.relay, Rig::config());
+  TEST_ASSERT_FALSE(client.begin(0));
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(ClientState::Stopped), static_cast<int>(client.state()));
+}
+
+void test_a_flag_that_could_not_be_written_is_written_again_by_the_next_good_answer() {
+  Rig rig;
+  rig.store.enrolledFlag = false;
+  rig.client.begin(0);
+  rig.client.setUnixTime(0, kEpoch);
+  rig.pairPlug(1);
+  rig.addSample(0, 1, 1);
+  rig.http.reply(201, enrollAnswer());
+  rig.http.reply(404);
+  rig.store.failSetEnrolled = true;
+  rig.http.reply(409, expected(2));
+  rig.http.reply(200, ack(2));
+  rig.http.reply(200, ack(3));
+  rig.run(0, 12000);
+  TEST_ASSERT_EQUAL_UINT32(1, rig.client.batchesStored());
+  TEST_ASSERT_FALSE(rig.store.enrolledFlag);
+  const int writes = rig.store.flagWrites;
+  rig.store.failSetEnrolled = false;
+  rig.addSample(12000, 1, 2);
+  rig.run(12100, 45000);
+  TEST_ASSERT_EQUAL_UINT32(2, rig.client.batchesStored());
+  TEST_ASSERT_TRUE(rig.store.enrolledFlag);
+  TEST_ASSERT_TRUE(rig.store.flagWrites > writes);
+}
+
+void test_the_gesture_works_while_a_code_is_shown_and_asks_for_another_code() {
+  Rig rig;
+  rig.client.begin(0);
+  rig.http.reply(201, enrollAnswer("AAAAAAAA"));
+  rig.http.reply(201, enrollAnswer("GGGGGGGG"));
+  rig.run(0, 300);
+  TEST_ASSERT_EQUAL_STRING("AAAAAAAA", rig.client.claimCode());
+  TEST_ASSERT_TRUE(rig.client.requestNewEnroll(400));
+  TEST_ASSERT_EQUAL_STRING("", rig.client.claimCode());
+  rig.run(500, 900);
+  TEST_ASSERT_EQUAL_STRING("GGGGGGGG", rig.client.claimCode());
+}
+
+void test_a_key_is_not_in_the_enroll_body_or_the_poll_path() {
+  Rig rig;
+  rig.client.begin(0);
+  rig.http.reply(201, enrollAnswer());
+  rig.http.reply(200);
+  rig.run(0, 6000);
+  TEST_ASSERT_TRUE(rig.http.requests.size() >= 2);
+  for (const Seen &seen : rig.http.requests) {
+    TEST_ASSERT_FALSE(contains(seen.body, kKey));
+    TEST_ASSERT_FALSE(contains(seen.path, kKey));
+    TEST_ASSERT_FALSE(seen.hasBearer);
+  }
+}
+
 }  // namespace
 
 void setUp() {}
@@ -1025,7 +1304,7 @@ int main() {
   RUN_TEST(test_the_gesture_is_refused_while_a_request_runs_when_stopped_or_when_the_flash_refuses_the_key);
   RUN_TEST(test_a_batch_that_the_service_refuses_three_times_with_422_is_dropped);
   RUN_TEST(test_an_answer_429_to_a_batch_waits_and_sends_the_same_batch);
-  RUN_TEST(test_five_answers_409_in_a_row_make_the_client_wait_like_after_a_failure);
+  RUN_TEST(test_from_the_fifth_answer_409_in_a_row_the_pause_grows_like_after_a_failure);
   RUN_TEST(test_an_answer_409_without_a_number_is_a_bad_answer);
   RUN_TEST(test_a_request_that_does_not_end_is_cancelled_after_40_seconds_and_counts_as_a_failure);
   RUN_TEST(test_a_request_in_flight_is_read_when_it_ends_even_when_the_link_is_down);
@@ -1033,5 +1312,19 @@ int main() {
   RUN_TEST(test_a_missing_key_is_reported_when_a_batch_is_due);
   RUN_TEST(test_events_are_kept_in_order_and_the_oldest_is_dropped_when_nobody_reads_them);
   RUN_TEST(test_the_key_is_never_in_a_body_or_a_path);
+  RUN_TEST(test_a_probe_that_cannot_send_a_batch_gives_up_after_a_minute_and_asks_for_a_new_code);
+  RUN_TEST(test_the_poll_answer_404_is_not_reported_as_a_claim);
+  RUN_TEST(test_a_link_that_was_down_for_more_than_25_days_does_not_hold_the_client_back);
+  RUN_TEST(test_the_timers_work_across_the_wrap_of_the_millisecond_counter);
+  RUN_TEST(test_an_owner_who_types_the_code_in_the_last_seconds_is_not_asked_for_a_second_code);
+  RUN_TEST(test_a_final_poll_that_fails_still_ends_the_code);
+  RUN_TEST(test_a_code_that_runs_out_does_not_write_the_flag_again);
+  RUN_TEST(test_the_answers_that_blame_the_batch_drop_it_after_three_tries_and_a_413_counts_too);
+  RUN_TEST(test_a_dropped_batch_keeps_the_results_and_the_next_batch_gets_a_new_number);
+  RUN_TEST(test_an_acknowledgement_below_the_number_of_the_batch_is_a_bad_answer);
+  RUN_TEST(test_a_builder_with_a_budget_above_the_buffer_is_refused);
+  RUN_TEST(test_a_flag_that_could_not_be_written_is_written_again_by_the_next_good_answer);
+  RUN_TEST(test_the_gesture_works_while_a_code_is_shown_and_asks_for_another_code);
+  RUN_TEST(test_a_key_is_not_in_the_enroll_body_or_the_poll_path);
   return UNITY_END();
 }

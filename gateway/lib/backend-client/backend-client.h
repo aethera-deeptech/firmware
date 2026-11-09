@@ -44,6 +44,9 @@ constexpr uint32_t kConflictLimit = 5;
 // A claim code that the backend lets live longer than this is shown for this long at the most.
 constexpr uint32_t kMaxClaimSeconds = 3600;
 
+// A hub that is probing its key (the poll answered 404) gives up after this time when no batch could be sent, and asks for a new code.
+constexpr uint32_t kProbeWaitMs = 60000;
+
 constexpr size_t kHardwareIdMaxLength = 64;
 constexpr size_t kHardwareIdMinLength = 6;
 constexpr size_t kFirmwareMaxLength = 32;
@@ -62,7 +65,7 @@ enum class HttpFailure : uint8_t {
 struct HttpRequest {
   HttpMethod method;
   const char *path;    // starts with a slash, and is valid until begin() returns
-  const char *bearer;  // the key text for the header Authorization, or null. The port copies it, because it is valid until begin() returns
+  const char *bearer;  // the key text for the header Authorization, or null. The port copies it and wipes its copy when the request ends, because it is valid until begin() returns
   const char *body;    // null for a GET. It stays valid until poll() has returned true
   size_t bodyLength;
 };
@@ -125,11 +128,13 @@ enum class ClientEventKind : uint8_t {
   CodeShown,      // a claim code is ready, see claimCode()
   CodeExpired,    // the code ran out, so the client asks for a new one
   Claimed,        // the owner typed the code
+  ClaimUnknown,   // the poll answered 404, so the claim is not known and the first batch tests the key
+  ProbeExpired,   // no batch could test the key in time, so the client asks for a new code
   BatchStored,    // value is the number of samples in the batch that the backend acknowledged
   Conflict,       // the answer 409, value is the number that the backend waits for
   RateLimited,    // the answer 429, value is the wait in seconds
   KeyRefused,     // the key is refused, so the client stopped
-  BatchDropped,   // the backend refused a batch 3 times (422), so its samples were dropped, value is the number of samples
+  BatchDropped,   // the backend refused a batch 3 times (400, 413, 415 or 422), so its samples were dropped, value is the number of samples
   RequestFailed,  // status is the HTTP status or 0, value is the failure kind
   BadAnswer,      // the answer could not be read
   NoClock,        // the batch waits because the Unix time is not set
@@ -145,13 +150,14 @@ struct ClientEvent {
 
 class BackendClient {
  public:
-  // The batch builder must have been made with kClientBodyBytes as its budget.
+  // The batch builder must have been made with kClientBodyBytes as its budget, and begin() refuses a builder with a larger one. The object holds the buffer of
+  // the body and of the answer, about 26 KB, so it must be a static object and never on the stack of a task (like SampleStore).
   BackendClient(HttpPort &http, ClientStore &store, BatchBuilder &builder, CommandRelay &relay, const ClientConfig &config);
 
   BackendClient(const BackendClient &) = delete;
   BackendClient &operator=(const BackendClient &) = delete;
 
-  // Checks the configuration and reads the enrolled flag. A hub that is enrolled starts to send, and any other hub starts to enroll. Returns false, and
+  // Checks the configuration (also the budget of the batch builder) and reads the enrolled flag. A hub that is enrolled starts to send, and any other hub starts to enroll. Returns false, and
   // stays stopped, when the configuration is not valid.
   bool begin(uint32_t nowMs);
 
@@ -164,6 +170,8 @@ class BackendClient {
   uint32_t unixTime(uint32_t nowMs);
 
   // Throws the key away, makes a new one, and asks for a new claim code. For a deliberate action of the owner on the hub, and the only way out of Refused.
+  // The samples that wait, the batch that was sent and not acknowledged, the results of relay commands and the commands that wait all stay, because the backend
+  // may know the hub already. So the gesture is meant for the same owner. A hub that goes to another business needs the stores cleared first (not built).
   // Returns false when a request runs, when the client is stopped or when the flash refuses the new key.
   bool requestNewEnroll(uint32_t nowMs);
 
@@ -202,6 +210,7 @@ class BackendClient {
   void onReadingsAnswer(uint32_t nowMs);
   void waitForRetryAfter(uint32_t nowMs);
   void goNeedEnroll(uint32_t nowMs);
+  void endExpiry(uint32_t nowMs);
 
   HttpPort &http_;
   ClientStore &store_;
@@ -221,6 +230,9 @@ class BackendClient {
   uint32_t consecutive422_;
   // True after an enrollment whose answer was lost, so the first batch tests the key. A refused key then means that the code was never claimed.
   bool probing_;
+  uint32_t probeDeadlineMs_;
+  // True when the code has run out and the last poll is on its way, so a claim in the last seconds is not lost.
+  bool expiring_;
   // True once a batch or a claim has proven the key in this run, so the flag in flash is written once.
   bool confirmed_;
   bool noClockReported_;

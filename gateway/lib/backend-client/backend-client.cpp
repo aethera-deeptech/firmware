@@ -29,6 +29,11 @@ bool isFirmwareChar(char c) {
   return isLetterOrDigit(c) || c == '.' || c == '_' || c == '+' || c == '-';
 }
 
+// The answers that say that the batch itself is wrong. A retry of the same batch gets the same answer, so after a few of them the batch is dropped.
+bool isBadBatchStatus(int status) {
+  return status == 400 || status == 413 || status == 415 || status == 422;
+}
+
 // Collects text in a buffer and remembers whether it fitted.
 class BufferOutput : public BatchOutput {
  public:
@@ -74,6 +79,8 @@ BackendClient::BackendClient(HttpPort &http, ClientStore &store, BatchBuilder &b
       consecutive409_(0),
       consecutive422_(0),
       probing_(false),
+      probeDeadlineMs_(0),
+      expiring_(false),
       confirmed_(false),
       noClockReported_(false),
       codeExpiresMs_(0),
@@ -108,6 +115,9 @@ bool BackendClient::configValid() const {
       return false;
     }
   }
+  if (builder_.budget() > kClientBodyBytes) {
+    return false;
+  }
   if (config_.firmware != nullptr) {
     const size_t length = strnlen(config_.firmware, kFirmwareMaxLength + 1);
     if (length == 0 || length > kFirmwareMaxLength) {
@@ -136,6 +146,7 @@ bool BackendClient::begin(uint32_t nowMs) {
   pending_ = Pending::None;
   confirmed_ = false;
   probing_ = false;
+  expiring_ = false;
   resetFailures();
   if (enrolled && haveKey) {
     state_ = ClientState::Running;
@@ -233,8 +244,11 @@ bool BackendClient::takeEvent(ClientEvent *out) {
 
 void BackendClient::goNeedEnroll(uint32_t nowMs) {
   state_ = ClientState::NeedEnroll;
-  store_.setEnrolled(false);
+  if (store_.enrolled()) {
+    store_.setEnrolled(false);
+  }
   probing_ = false;
+  expiring_ = false;
   confirmed_ = false;
   claimCode_[0] = '\0';
   resetFailures();
@@ -278,11 +292,29 @@ void BackendClient::update(uint32_t nowMs, bool linkUp) {
     }
     return;
   }
-  if (state_ == ClientState::ShowCode && static_cast<int32_t>(nowMs - codeExpiresMs_) >= 0) {
-    emit(ClientEventKind::CodeExpired);
+  if (!linkUp) {
+    // The time stamp of the next action is a 32 bit value, so it must not stay behind for weeks while the link is down.
+    if (due(nowMs)) {
+      setDue(nowMs, 0);
+    }
+    return;
+  }
+  if (state_ == ClientState::Running && probing_ && static_cast<int32_t>(nowMs - probeDeadlineMs_) >= 0) {
+    emit(ClientEventKind::ProbeExpired);
     goNeedEnroll(nowMs);
   }
-  if (!linkUp || !due(nowMs)) {
+  if (!due(nowMs)) {
+    return;
+  }
+  if (state_ == ClientState::ShowCode && static_cast<int32_t>(nowMs - codeExpiresMs_) >= 0) {
+    if (expiring_) {
+      // The last poll could not start, so the code is over.
+      endExpiry(nowMs);
+      return;
+    }
+    // One more poll, because the owner may have typed the code since the last one.
+    expiring_ = true;
+    startPoll(nowMs);
     return;
   }
   switch (state_) {
@@ -312,6 +344,7 @@ void BackendClient::finish(uint32_t nowMs) {
   if (response_.failure != HttpFailure::None) {
     emit(ClientEventKind::RequestFailed, 0, static_cast<uint32_t>(response_.failure));
     backoff(nowMs);
+    endExpiry(nowMs);
     return;
   }
   // An answer that is not a 401 ends a run of 401 answers, and the same holds for 409 and 422.
@@ -321,7 +354,7 @@ void BackendClient::finish(uint32_t nowMs) {
   if (response_.status != 409) {
     consecutive409_ = 0;
   }
-  if (response_.status != 422) {
+  if (!isBadBatchStatus(response_.status)) {
     consecutive422_ = 0;
   }
   switch (kind) {
@@ -336,6 +369,19 @@ void BackendClient::finish(uint32_t nowMs) {
       break;
     case Pending::None:
       break;
+  }
+  endExpiry(nowMs);
+}
+
+// The last poll of a code that ran out has ended. A hub that is still waiting for the claim then asks for a new code.
+void BackendClient::endExpiry(uint32_t nowMs) {
+  if (!expiring_) {
+    return;
+  }
+  expiring_ = false;
+  if (state_ == ClientState::ShowCode) {
+    emit(ClientEventKind::CodeExpired);
+    goNeedEnroll(nowMs);
   }
 }
 
@@ -364,7 +410,7 @@ void BackendClient::startEnroll(uint32_t nowMs) {
     return;
   }
   uint8_t digest[kSha256Size];
-  const bool hashed = config_.sha256(config_.sha256Context, reinterpret_cast<const uint8_t *>(key), strlen(key), digest);
+  const bool hashed = config_.sha256(config_.sha256Context, reinterpret_cast<const uint8_t *>(key), strnlen(key, kApiKeySize), digest);
   wipe(key, sizeof(key));
   if (!hashed) {
     emit(ClientEventKind::KeyMissing);
@@ -447,17 +493,18 @@ void BackendClient::onPollAnswer(uint32_t nowMs) {
     // The answer 200 says that the owner typed the code. The answer 404 comes when the answer 200 was lost, or when the code expired and was removed, so the
     // first batch tests the key. The backend answers 401 to it when the hub was never claimed, and then the hub asks for a new code.
     if (status == 200) {
-      store_.setEnrolled(true);
-      confirmed_ = true;
+      confirmed_ = store_.setEnrolled(true);
       probing_ = false;
     } else {
       probing_ = true;
+      probeDeadlineMs_ = nowMs + kProbeWaitMs;
     }
     state_ = ClientState::Running;
+    expiring_ = false;
     claimCode_[0] = '\0';
     resetFailures();
     setDue(nowMs, 0);
-    emit(ClientEventKind::Claimed, status);
+    emit(status == 200 ? ClientEventKind::Claimed : ClientEventKind::ClaimUnknown, status);
     return;
   }
   if (status == 410) {
@@ -524,6 +571,12 @@ void BackendClient::onReadingsAnswer(uint32_t nowMs) {
       backoff(nowMs);
       return;
     }
+    if (answer_.ackSeq < builder_.seq()) {
+      // The batch is not stored, whatever the answer says.
+      emit(ClientEventKind::BadAnswer, status, answer_.ackSeq);
+      backoff(nowMs);
+      return;
+    }
     const size_t samples = builder_.sampleCount();
     builder_.onAck(answer_.ackSeq);
     relay_.dropResults(sentResults_);
@@ -536,8 +589,7 @@ void BackendClient::onReadingsAnswer(uint32_t nowMs) {
       relay_.forgetEnded(answer_.serverTime);
     }
     if (!confirmed_) {
-      store_.setEnrolled(true);
-      confirmed_ = true;
+      confirmed_ = store_.setEnrolled(true);
     }
     probing_ = false;
     batchesStored_++;
@@ -554,14 +606,15 @@ void BackendClient::onReadingsAnswer(uint32_t nowMs) {
       return;
     }
     builder_.onExpectedSeq(error.expectedSeq);
-    // The backend answered, so the link works, and the failures before it do not count for the pause.
-    failureCount_ = 0;
     emit(ClientEventKind::Conflict, status, error.expectedSeq);
     consecutive409_++;
     if (consecutive409_ >= kConflictLimit) {
-      consecutive409_ = 0;
+      // One answer should have been enough, so from the fifth on the pause grows like after a failure, 5 seconds at first.
+      failureCount_ = consecutive409_ - kConflictLimit;
       backoff(nowMs);
     } else {
+      // The backend answered, so the link works, and the failures before it do not count for the pause.
+      failureCount_ = 0;
       setDue(nowMs, kMinBatchGapMs);
     }
     return;
@@ -580,7 +633,7 @@ void BackendClient::onReadingsAnswer(uint32_t nowMs) {
     backoff(nowMs);
     return;
   }
-  if (status == 422) {
+  if (isBadBatchStatus(status)) {
     consecutive422_++;
     if (consecutive422_ >= kBadBatchLimit) {
       consecutive422_ = 0;
