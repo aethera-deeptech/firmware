@@ -263,26 +263,60 @@ void test_a_hello_is_answered_with_a_hello_ack_to_the_sender() {
 
 void test_the_hub_answers_five_hello_frames_in_a_second_and_then_stops() {
   Rig rig;
-  const NodeSim node = makeNode(1);
-  for (int i = 0; i < 5; i++) {
-    TEST_ASSERT_EQUAL_INT(kind(LinkEventKind::HelloAnswered), kind(hello(rig, node, 100 + i)));
+  for (uint8_t i = 0; i < 5; i++) {
+    TEST_ASSERT_EQUAL_INT(kind(LinkEventKind::HelloAnswered), kind(hello(rig, makeNode(static_cast<uint8_t>(i + 1)), 100 + i)));
   }
-  TEST_ASSERT_EQUAL_INT(kind(LinkEventKind::HelloLimited), kind(hello(rig, node, 500)));
-  TEST_ASSERT_EQUAL_INT(kind(LinkEventKind::HelloLimited), kind(hello(rig, node, 100 + kHelloWindowMs - 1)));
+  TEST_ASSERT_EQUAL_INT(kind(LinkEventKind::HelloLimited), kind(hello(rig, makeNode(6), 500)));
+  TEST_ASSERT_EQUAL_INT(kind(LinkEventKind::HelloLimited), kind(hello(rig, makeNode(7), 100 + kHelloWindowMs - 1)));
   TEST_ASSERT_EQUAL_UINT(5, rig.radio.count);
   // A new window starts one second after the first HELLO of the old one.
-  TEST_ASSERT_EQUAL_INT(kind(LinkEventKind::HelloAnswered), kind(hello(rig, node, 100 + kHelloWindowMs)));
+  TEST_ASSERT_EQUAL_INT(kind(LinkEventKind::HelloAnswered), kind(hello(rig, makeNode(8), 100 + kHelloWindowMs)));
   TEST_ASSERT_EQUAL_UINT(6, rig.radio.count);
+}
+
+void test_one_address_gets_two_answers_in_a_second_and_its_refused_frames_do_not_use_the_global_limit() {
+  Rig rig;
+  const NodeSim noisy = makeNode(1);
+  TEST_ASSERT_EQUAL_INT(kind(LinkEventKind::HelloAnswered), kind(hello(rig, noisy, 0)));
+  TEST_ASSERT_EQUAL_INT(kind(LinkEventKind::HelloAnswered), kind(hello(rig, noisy, 10)));
+  for (uint32_t t = 20; t < 400; t += 20) {
+    TEST_ASSERT_EQUAL_INT(kind(LinkEventKind::HelloLimited), kind(hello(rig, noisy, t)));
+  }
+  TEST_ASSERT_EQUAL_UINT(2, rig.radio.count);
+  // The global limit is 5, and the noisy address used 2, so three other addresses are answered and the fourth is not.
+  for (uint8_t i = 2; i <= 4; i++) {
+    TEST_ASSERT_EQUAL_INT(kind(LinkEventKind::HelloAnswered), kind(hello(rig, makeNode(i), 500)));
+  }
+  TEST_ASSERT_EQUAL_INT(kind(LinkEventKind::HelloLimited), kind(hello(rig, makeNode(5), 501)));
+  TEST_ASSERT_EQUAL_UINT(5, rig.radio.count);
+  // The window of the address is its own and starts with its first HELLO, so it is answered again one second later.
+  TEST_ASSERT_EQUAL_INT(kind(LinkEventKind::HelloLimited), kind(hello(rig, noisy, kHelloWindowMs - 1)));
+  TEST_ASSERT_EQUAL_INT(kind(LinkEventKind::HelloAnswered), kind(hello(rig, noisy, kHelloWindowMs)));
+}
+
+void test_the_table_of_hello_senders_takes_more_addresses_than_it_has_places_and_the_limit_holds_for_the_last_ones() {
+  Rig rig;
+  // Twenty addresses, one second apart, so the global limit never matters. Every one is answered, and the table replaces the oldest place.
+  for (uint8_t i = 1; i <= 20; i++) {
+    TEST_ASSERT_EQUAL_INT(kind(LinkEventKind::HelloAnswered), kind(hello(rig, makeNode(i), static_cast<uint32_t>(i) * 1000u)));
+  }
+  const NodeSim last = makeNode(20);
+  TEST_ASSERT_EQUAL_INT(kind(LinkEventKind::HelloAnswered), kind(hello(rig, last, 20000 + 10)));
+  TEST_ASSERT_EQUAL_INT(kind(LinkEventKind::HelloLimited), kind(hello(rig, last, 20000 + 20)));
+  TEST_ASSERT_EQUAL_UINT(21, rig.radio.count);
 }
 
 void test_the_hello_limit_works_across_the_wrap_of_the_clock() {
   Rig rig;
-  const NodeSim node = makeNode(1);
-  for (int i = 0; i < 5; i++) {
-    TEST_ASSERT_EQUAL_INT(kind(LinkEventKind::HelloAnswered), kind(hello(rig, node, 0xFFFFFF00u)));
+  for (uint8_t i = 1; i <= 5; i++) {
+    TEST_ASSERT_EQUAL_INT(kind(LinkEventKind::HelloAnswered), kind(hello(rig, makeNode(i), 0xFFFFFF00u)));
   }
-  TEST_ASSERT_EQUAL_INT(kind(LinkEventKind::HelloLimited), kind(hello(rig, node, 0xFFFFFF10u)));
-  TEST_ASSERT_EQUAL_INT(kind(LinkEventKind::HelloAnswered), kind(hello(rig, node, 0xFFFFFF00u + kHelloWindowMs)));
+  TEST_ASSERT_EQUAL_INT(kind(LinkEventKind::HelloLimited), kind(hello(rig, makeNode(6), 0xFFFFFF10u)));
+  TEST_ASSERT_EQUAL_INT(kind(LinkEventKind::HelloAnswered), kind(hello(rig, makeNode(7), 0xFFFFFF00u + kHelloWindowMs)));
+  // The limit of one address works across the wrap too.
+  TEST_ASSERT_EQUAL_INT(kind(LinkEventKind::HelloAnswered), kind(hello(rig, makeNode(1), 0xFFFFFF00u + kHelloWindowMs)));
+  TEST_ASSERT_EQUAL_INT(kind(LinkEventKind::HelloAnswered), kind(hello(rig, makeNode(1), 0xFFFFFF00u + kHelloWindowMs + 1)));
+  TEST_ASSERT_EQUAL_INT(kind(LinkEventKind::HelloLimited), kind(hello(rig, makeNode(1), 0xFFFFFF00u + kHelloWindowMs + 2)));
 }
 
 void test_a_radio_that_refuses_the_hello_ack_is_reported() {
@@ -632,8 +666,8 @@ void test_a_frame_from_an_address_that_no_node_has_is_ignored_and_costs_no_limit
   }
   TEST_ASSERT_EQUAL_UINT(0, rig.radio.count);
   // The five answers of the window are still there for a real node.
-  for (int i = 0; i < 5; i++) {
-    TEST_ASSERT_EQUAL_INT(kind(LinkEventKind::HelloAnswered), kind(hello(rig, makeNode(1), 0)));
+  for (uint8_t i = 1; i <= 5; i++) {
+    TEST_ASSERT_EQUAL_INT(kind(LinkEventKind::HelloAnswered), kind(hello(rig, makeNode(i), 0)));
   }
 }
 
@@ -952,6 +986,8 @@ int main() {
   UNITY_BEGIN();
   RUN_TEST(test_a_hello_is_answered_with_a_hello_ack_to_the_sender);
   RUN_TEST(test_the_hub_answers_five_hello_frames_in_a_second_and_then_stops);
+  RUN_TEST(test_one_address_gets_two_answers_in_a_second_and_its_refused_frames_do_not_use_the_global_limit);
+  RUN_TEST(test_the_table_of_hello_senders_takes_more_addresses_than_it_has_places_and_the_limit_holds_for_the_last_ones);
   RUN_TEST(test_the_hello_limit_works_across_the_wrap_of_the_clock);
   RUN_TEST(test_a_radio_that_refuses_the_hello_ack_is_reported);
   RUN_TEST(test_frames_that_are_not_valid_or_not_for_the_hub_are_ignored);
