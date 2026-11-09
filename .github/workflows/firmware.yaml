@@ -91,6 +91,11 @@ jobs:
         if: ${{ !cancelled() }}
         run: pio test --project-dir common --environment native
 
+      # The generator of the bundle of root certificates uses the standard library only, and the test checks it against a pinned result.
+      - name: Test the generator of the bundle of root certificates
+        if: ${{ !cancelled() }}
+        run: python3 gateway/tools/test-make-cert-bundle.py
+
       # PlatformIO has no step for coverage, so gcovr reads the data that the native build wrote, and only the code of the libraries counts.
       # gcov looks for the sources relative to the project folder, so gcovr runs in the folder of each project and writes to the root.
       - name: Make the coverage report of the gateway

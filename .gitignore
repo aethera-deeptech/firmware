@@ -6,6 +6,9 @@ build/
 *.elf
 *.map
 
+# The bundle of root certificates that the hub build makes from gateway/certs/cacert.pem
+gateway/certs/x509_crt_bundle.bin
+
 # Local configuration. An example file is committed, and the pattern matches in every folder.
 .env
 .env.*
