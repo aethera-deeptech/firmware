@@ -1,0 +1,121 @@
+#!/usr/bin/env python3
+"""Tests of make-cert-bundle.py. Run it with: python3 gateway/tools/test-make-cert-bundle.py"""
+
+import hashlib
+import importlib.util
+import os
+import struct
+import unittest
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+CERTS = os.path.join(os.path.dirname(HERE), "certs")
+
+spec = importlib.util.spec_from_file_location("make_cert_bundle", os.path.join(HERE, "make-cert-bundle.py"))
+generator = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(generator)
+
+# The bundle that the generator makes from the pinned list. The same bytes were made with the cryptography package, which is what the script of Espressif
+# uses, and the two were equal. A change of this value means that the list or the generator changed, and it has to be looked at.
+EXPECTED_BUNDLE_SHA256 = "8ca330673e7ecd07610eecfaffd23aba8b9ceca10a381d3878f268348edf5aec"
+
+
+def read(name):
+    with open(os.path.join(CERTS, name), "r", encoding="ascii", errors="replace") as handle:
+        return handle.read()
+
+
+def entries(bundle):
+    count = struct.unpack(">H", bundle[:2])[0]
+    pos = 2
+    found = []
+    for _ in range(count):
+        name_length, key_length = struct.unpack(">HH", bundle[pos : pos + 4])
+        pos += 4
+        name = bundle[pos : pos + name_length]
+        pos += name_length
+        key = bundle[pos : pos + key_length]
+        pos += key_length
+        found.append((name, key))
+    assert pos == len(bundle), "bytes are left after the last entry"
+    return found
+
+
+class PinnedList(unittest.TestCase):
+    def test_the_list_is_the_one_that_is_pinned(self):
+        with open(os.path.join(CERTS, "cacert.pem"), "rb") as handle:
+            digest = hashlib.sha256(handle.read()).hexdigest()
+        with open(os.path.join(CERTS, "cacert.pem.sha256"), "r", encoding="ascii") as handle:
+            pinned = handle.read().split()[0]
+        self.assertEqual(pinned, digest)
+
+    def test_the_bundle_of_the_list_is_the_expected_one(self):
+        bundle = generator.make_bundle([read("cacert.pem")])
+        self.assertEqual(EXPECTED_BUNDLE_SHA256, hashlib.sha256(bundle).hexdigest())
+
+    def test_every_certificate_of_the_list_is_in_the_bundle_in_order_of_the_name(self):
+        text = read("cacert.pem")
+        bundle = generator.make_bundle([text])
+        found = entries(bundle)
+        self.assertEqual(text.count("-----BEGIN CERTIFICATE-----"), len(found))
+        names = [name for name, _ in found]
+        self.assertEqual(sorted(names), names)
+        for name, key in found:
+            self.assertEqual(0x30, name[0])
+            self.assertEqual(0x30, key[0])
+
+    def test_the_roots_of_the_chain_of_the_backend_are_in_the_bundle(self):
+        found = entries(generator.make_bundle([read("cacert.pem")]))
+        names = b"".join(name for name, _ in found)
+        for root in (b"GTS Root R4", b"ISRG Root X1"):
+            self.assertIn(root, names)
+
+
+class Errors(unittest.TestCase):
+    def test_an_input_without_a_certificate_is_refused(self):
+        with self.assertRaises(generator.BundleError):
+            generator.make_bundle(["nothing here"])
+        with self.assertRaises(generator.BundleError):
+            generator.make_bundle([])
+
+    def test_a_block_that_is_not_base64_is_refused(self):
+        with self.assertRaises(generator.BundleError):
+            generator.make_bundle(["-----BEGIN CERTIFICATE-----\n!!!!\n-----END CERTIFICATE-----\n"])
+
+    def test_a_certificate_that_is_cut_short_is_refused(self):
+        text = read("cacert.pem")
+        start = text.index("-----BEGIN CERTIFICATE-----")
+        end = text.index("-----END CERTIFICATE-----", start)
+        lines = text[start:end].split("\n")
+        cut = "\n".join(lines[: len(lines) // 2]) + "\n-----END CERTIFICATE-----\n"
+        with self.assertRaises(generator.BundleError):
+            generator.make_bundle([cut])
+
+    def test_bytes_that_are_not_a_certificate_are_refused(self):
+        for body in ("AAAA", "MAA=", "MIIB", "MIGAAQ=="):
+            with self.assertRaises(generator.BundleError):
+                generator.make_bundle(["-----BEGIN CERTIFICATE-----\n" + body + "\n-----END CERTIFICATE-----\n"])
+
+    def test_a_length_that_runs_past_the_certificate_is_refused(self):
+        with self.assertRaises(generator.BundleError):
+            generator.read_tlv(bytes([0x30, 0x82, 0xFF, 0xFF, 0x00]), 0)
+        with self.assertRaises(generator.BundleError):
+            generator.read_tlv(bytes([0x30, 0x85, 1, 2, 3, 4, 5]), 0)
+        with self.assertRaises(generator.BundleError):
+            generator.read_tlv(bytes([0x30, 0x80]), 0)
+        with self.assertRaises(generator.BundleError):
+            generator.read_tlv(bytes([0x30]), 0)
+
+
+class Output(unittest.TestCase):
+    def test_the_same_input_gives_the_same_bytes_and_the_order_of_the_files_does_not_matter(self):
+        text = read("cacert.pem")
+        first = text.index("-----BEGIN CERTIFICATE-----")
+        middle = text.index("-----BEGIN CERTIFICATE-----", first + 1)
+        part_a = text[first:middle]
+        part_b = text[middle:]
+        self.assertEqual(generator.make_bundle([part_a, part_b]), generator.make_bundle([part_b, part_a]))
+        self.assertEqual(generator.make_bundle([part_a, part_b]), generator.make_bundle([text]))
+
+
+if __name__ == "__main__":
+    unittest.main()
