@@ -97,6 +97,8 @@ class BatchBuilder {
   size_t sampleCount() const { return sampleCount_; }
   size_t nodeCount() const { return nodeCount_; }
   size_t budget() const { return budgetBytes_; }
+  // The samples that wait in the store, whether they belong to a batch that was sent or not.
+  size_t waitingSamples() const { return store_.size(); }
 
   // Writes the body of the batch that prepare() made, and returns false when the output refused a write.
   bool render(BatchOutput &out) const;
