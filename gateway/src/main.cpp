@@ -14,6 +14,7 @@
 #include "payloads.h"
 #include "pairing-window.h"
 #include "portal.h"
+#include "sample-store.h"
 #include "screen-text.h"
 #include "settings-store.h"
 #include "wifi-client.h"
