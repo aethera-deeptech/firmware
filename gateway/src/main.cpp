@@ -3,6 +3,7 @@
 #include "config.h"
 #include "crypto-selftest.h"
 #include "hub-button.h"
+#include "hub-link.h"
 #include "hub-pairing.h"
 #include "node-registry.h"
 #include "nvs-record-store.h"
