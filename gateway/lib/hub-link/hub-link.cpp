@@ -245,7 +245,7 @@ void HubLink::fillNodeId(const uint8_t mac[kMacSize], LinkEvent *event) const {
 }
 
 bool HubLink::sendPlain(const uint8_t mac[kMacSize], FrameType type, const uint8_t *payload, size_t length) {
-  if (counter_ == kNoU32) {
+  if (hubBootId_ == 0 || counter_ == kNoU32) {
     return false;
   }
   // The counter is used up even when the send fails, so it is never used again.
@@ -257,7 +257,7 @@ bool HubLink::sendPlain(const uint8_t mac[kMacSize], FrameType type, const uint8
 
 bool HubLink::sendAck(const uint8_t mac[kMacSize], uint32_t nodeBootId, uint32_t highestSampleSeq) {
   const uint8_t *key = registry_.keyOf(mac);
-  if (key == nullptr || counter_ == kNoU32) {
+  if (hubBootId_ == 0 || key == nullptr || counter_ == kNoU32) {
     return false;
   }
   Ack ack;
@@ -275,7 +275,8 @@ bool HubLink::sendAck(const uint8_t mac[kMacSize], uint32_t nodeBootId, uint32_t
 
 bool HubLink::sendCommand(const uint8_t mac[kMacSize], uint32_t echoBootId, uint32_t echoCounter, uint16_t number, uint8_t action) {
   const uint8_t *key = registry_.keyOf(mac);
-  if (key == nullptr || counter_ == kNoU32 || action > 1) {
+  // Without a boot number every start would use the same nonces with the same key, so nothing is sent, as onFrame sends nothing either.
+  if (hubBootId_ == 0 || key == nullptr || counter_ == kNoU32 || action > 1) {
     return false;
   }
   Command command;

@@ -48,8 +48,8 @@ struct LinkEvent {
   LinkEventKind kind;
   bool replied;              // a frame was handed to the radio
   uint8_t mac[kMacSize];     // the radio address that the frame came from, set for every event
-  uint32_t frameBootId;      // the bootId and the counter of the frame, set for Telemetry, PairedNode and ResultReceived. A COMMAND echoes them.
-  uint32_t frameCounter;
+  uint32_t frameBootId;      // the bootId and the counter of the frame, set for Telemetry, PairedNode and ResultReceived
+  uint32_t frameCounter;     // A COMMAND may echo only the values of a Telemetry or PairedNode event. For ResultReceived they are for the log only.
   uint16_t commandNumber;    // set for ResultReceived
   bool commandOk;            // set for ResultReceived, true when the node says that the relay switched
   RequestResult request;     // set when the kind is PairRequest

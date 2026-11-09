@@ -648,6 +648,18 @@ void test_a_hub_with_no_boot_number_is_mute() {
   TEST_ASSERT_FALSE(rig.pairing.pending());
 }
 
+void test_a_hub_with_no_boot_number_sends_no_command_and_no_result_is_taken() {
+  Rig rig(0);
+  NodeSim node = makeNode(1);
+  // The node is stored directly, because a hub without a boot number cannot pair one through the frames.
+  uint8_t key[kPairingKeySize] = {1, 2, 3};
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(PairResult::Ok), static_cast<int>(rig.registry.pair(kKindPlug, node.mac, key)));
+  memcpy(node.key, key, sizeof(node.key));
+  TEST_ASSERT_FALSE(rig.link.sendCommand(node.mac, kNodeBootId, 1, 1, 1));
+  TEST_ASSERT_EQUAL_INT(kind(LinkEventKind::Ignored), kind(result(rig, node, 0, kNodeBootId, 1, 1, 1, 0)));
+  TEST_ASSERT_EQUAL_INT(0, rig.radio.attempts);
+}
+
 void test_a_frame_that_the_radio_refuses_still_uses_up_its_counter() {
   Rig rig;
   const NodeSim node = makeNode(1);
@@ -846,6 +858,45 @@ void test_a_telemetry_event_names_the_sender_and_the_frame_that_a_command_can_ec
   TEST_ASSERT_EQUAL_UINT32(0, first.frameCounter);
 }
 
+void test_a_result_with_a_higher_node_boot_number_passes_and_a_flash_that_refuses_it_drops_the_frame() {
+  Rig rig;
+  NodeSim node = makeNode(1);
+  pairNode(rig, &node, 1000);
+  // A new boot of the node is a higher bootId, and its counter starts again.
+  const LinkEvent next = result(rig, node, 2000, kNodeBootId + 1, 0, 8, 1);
+  TEST_ASSERT_EQUAL_INT(kind(LinkEventKind::ResultReceived), kind(next));
+  TEST_ASSERT_EQUAL_UINT32(kNodeBootId + 1, next.frameBootId);
+  // The write of the next boot value fails, so the frame is dropped and the same frame passes when the flash works again.
+  rig.store.failWriteNumber = rig.store.writes + 1;
+  const LinkEvent refused = result(rig, node, 2100, kNodeBootId + 2, 0, 9, 1);
+  TEST_ASSERT_EQUAL_INT(kind(LinkEventKind::StoreFailed), kind(refused));
+  TEST_ASSERT_EQUAL_UINT16(0, refused.commandNumber);
+  const LinkEvent again = result(rig, node, 2200, kNodeBootId + 2, 0, 9, 1);
+  TEST_ASSERT_EQUAL_INT(kind(LinkEventKind::ResultReceived), kind(again));
+  TEST_ASSERT_EQUAL_UINT16(9, again.commandNumber);
+}
+
+void test_a_result_sealed_with_the_key_of_another_node_is_ignored_and_every_event_names_the_sender() {
+  Rig rig;
+  NodeSim first = makeNode(1);
+  NodeSim second = makeNode(2);
+  pairNode(rig, &first, 1000);
+  rig.radio.count = 0;
+  pairNode(rig, &second, 5000);
+  TEST_ASSERT_TRUE(memcmp(first.key, second.key, sizeof(first.key)) != 0);
+  uint8_t frame[kMaxFrameSize];
+  const size_t size = resultFrame(first.key, kNodeBootId, 9, 1, 1, frame);
+  const LinkEvent forged = rig.link.onFrame(6000, second.mac, frame, size);
+  TEST_ASSERT_EQUAL_INT(kind(LinkEventKind::Ignored), kind(forged));
+  // An ignored event still names the address that sent the frame.
+  TEST_ASSERT_EQUAL_UINT8_ARRAY(second.mac, forged.mac, kMacSize);
+  const LinkEvent mismatch = result(rig, second, 6100, kNodeBootId, 10, 55, 1, kHubBootId + 1);
+  TEST_ASSERT_EQUAL_INT(kind(LinkEventKind::HubBootMismatch), kind(mismatch));
+  TEST_ASSERT_EQUAL_UINT8_ARRAY(second.mac, mismatch.mac, kMacSize);
+  TEST_ASSERT_EQUAL_UINT16(0, mismatch.commandNumber);
+  TEST_ASSERT_EQUAL_UINT32(0, mismatch.frameBootId);
+}
+
 void test_a_command_is_sealed_for_the_node_with_the_echo_the_number_and_the_action() {
   Rig rig;
   NodeSim node = makeNode(1);
@@ -934,6 +985,9 @@ int main() {
   RUN_TEST(test_a_result_that_is_old_forged_unknown_or_malformed_is_ignored);
   RUN_TEST(test_a_result_with_another_hub_boot_number_gets_an_ack_with_the_right_one_and_is_not_reported);
   RUN_TEST(test_a_telemetry_event_names_the_sender_and_the_frame_that_a_command_can_echo);
+  RUN_TEST(test_a_hub_with_no_boot_number_sends_no_command_and_no_result_is_taken);
+  RUN_TEST(test_a_result_with_a_higher_node_boot_number_passes_and_a_flash_that_refuses_it_drops_the_frame);
+  RUN_TEST(test_a_result_sealed_with_the_key_of_another_node_is_ignored_and_every_event_names_the_sender);
   RUN_TEST(test_a_command_is_sealed_for_the_node_with_the_echo_the_number_and_the_action);
   RUN_TEST(test_a_command_is_refused_for_an_unpaired_node_a_bad_action_and_a_radio_that_refuses);
   return UNITY_END();
