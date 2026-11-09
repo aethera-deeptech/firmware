@@ -1,0 +1,7 @@
+{
+  "name": "boot-counter",
+  "version": "0.1.0",
+  "description": "The boot number of the hub, which grows by one at every start and is confirmed in flash before the hub sends a frame",
+  "frameworks": "*",
+  "platforms": "*"
+}

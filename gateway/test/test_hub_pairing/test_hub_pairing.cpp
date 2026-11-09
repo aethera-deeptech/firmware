@@ -15,7 +15,8 @@ constexpr uint32_t kHubBootId = 7;
 
 // Everything that the hub side needs, wired as in the firmware.
 struct Rig {
-  Rig() : registry(store), crypto{&knobs, fakeHmac, fakeOpen, fakeSeal, fakeGenerate, fakeAgree}, pairing(window, registry, crypto, kHubMac, kHubBootId) {
+  explicit Rig(uint32_t hubBootId = kHubBootId)
+      : registry(store), crypto{&knobs, fakeHmac, fakeOpen, fakeSeal, fakeGenerate, fakeAgree}, pairing(window, registry, crypto, kHubMac, hubBootId) {
     registry.load();
   }
 
@@ -549,6 +550,25 @@ void test_a_first_frame_with_another_hub_boot_number_does_not_pair() {
   TEST_ASSERT_EQUAL_INT(result(FirstFrameResult::Committed), result(rig.pairing.onFrame(200, node.mac, frame, size, &out)));
 }
 
+void test_a_hub_with_no_boot_number_takes_no_request_and_no_first_frame() {
+  Rig rig(0);
+  const NodeSim node = makeNode(1);
+  rig.window.press(0);
+  RequestOutcome outcome;
+  TEST_ASSERT_EQUAL_INT(result(RequestResult::NotOpen), result(ask(rig, node, 10, &outcome)));
+  TEST_ASSERT_EQUAL_STRING("", outcome.nodeId);
+  TEST_ASSERT_FALSE(rig.pairing.pending());
+  TEST_ASSERT_TRUE(rig.window.isOpen(10));
+  // No key was made for it.
+  TEST_ASSERT_EQUAL_UINT8(1, rig.knobs.next);
+  uint8_t frame[kMaxFrameSize];
+  const uint8_t key[kPairingKeySize] = {1};
+  const size_t size = sealed(key, FrameType::Telemetry, 1, 0, frame, sizeof(frame), 0);
+  FirstFrame out;
+  TEST_ASSERT_EQUAL_INT(result(FirstFrameResult::NotPending), result(rig.pairing.onFrame(20, node.mac, frame, size, &out)));
+  TEST_ASSERT_EQUAL_UINT32(0, rig.pairing.hubBootId());
+}
+
 int main() {
   UNITY_BEGIN();
   RUN_TEST(test_a_request_in_an_open_window_is_accepted_and_names_the_node);
@@ -580,5 +600,6 @@ int main() {
   RUN_TEST(test_the_times_work_across_the_wrap_of_the_clock);
   RUN_TEST(test_a_result_that_is_not_committed_clears_the_old_header_and_payload);
   RUN_TEST(test_a_first_frame_with_another_hub_boot_number_does_not_pair);
+  RUN_TEST(test_a_hub_with_no_boot_number_takes_no_request_and_no_first_frame);
   return UNITY_END();
 }
