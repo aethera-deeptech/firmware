@@ -130,21 +130,6 @@ void SampleStore::discardOldest(size_t count) {
   size_ -= count;
 }
 
-template <typename Drop>
-size_t SampleStore::removeWhere(Drop drop) {
-  size_t kept = 0;
-  for (size_t i = 0; i < size_; i++) {
-    const StoredSample sample = at(i);
-    if (!drop(sample)) {
-      pool_[(head_ + kept) % kSamplePoolSize] = sample;
-      kept++;
-    }
-  }
-  const size_t removed = size_ - kept;
-  size_ = kept;
-  return removed;
-}
-
 void SampleStore::forget(const uint8_t mac[kMacSize]) {
   const int index = findNode(mac);
   if (index < 0) {
@@ -155,7 +140,11 @@ void SampleStore::forget(const uint8_t mac[kMacSize]) {
 }
 
 size_t SampleStore::expire(uint32_t nowMs) {
-  const size_t removed = removeWhere([nowMs](const StoredSample &sample) { return static_cast<uint32_t>(nowMs - sample.capturedMs) > kKeepSampleMs; });
+  // A sample cannot be older than its arrival, so a difference with the top bit set means that nowMs was read before the sample came in, and it is no age.
+  const size_t removed = removeWhere([nowMs](const StoredSample &sample) {
+    const uint32_t held = nowMs - sample.capturedMs;
+    return static_cast<int32_t>(held) > 0 && held > kKeepSampleMs;
+  });
   counts_.expired += static_cast<uint32_t>(removed);
   return removed;
 }

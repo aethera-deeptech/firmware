@@ -52,8 +52,14 @@ class FailingOutput : public BatchOutput {
   size_t written_ = 0;
 };
 
+// By default the builder has had its first 409, so the batches are numbered from 1, which keeps the other tests simple. The probe test makes one that has not.
 struct Rig {
-  Rig() : registry(flash), builder(store, registry) { registry.load(); }
+  explicit Rig(bool afterConflict = true) : registry(flash), builder(store, registry) {
+    registry.load();
+    if (afterConflict) {
+      builder.onExpectedSeq(1);
+    }
+  }
 
   void pairPlug(uint32_t number) {
     uint8_t mac[kMacSize];
@@ -146,6 +152,10 @@ void test_the_limits_are_the_ones_of_the_contract() {
   TEST_ASSERT_EQUAL_UINT32(6000, kMinBatchGapMs);
   TEST_ASSERT_EQUAL_UINT32(1700000000u, kMinUnixSeconds);
   TEST_ASSERT_EQUAL_UINT(37, kResultIdSize);
+  TEST_ASSERT_EQUAL_UINT32(0x7FFFFFFFu, kProbeSeq);
+  // The estimates are upper bounds for the longest sample and the longest node, written out here in full.
+  TEST_ASSERT_TRUE(strlen("{\"t\":4294967295,\"v\":500.0,\"i\":200.00,\"p\":60000.0,\"e\":4294967.294,\"f\":100.0,\"pf\":1.00,\"a\":3,\"r\":0},") <= kMaxSampleJsonBytes);
+  TEST_ASSERT_TRUE(strlen("{\"nodeId\":\"CLAMP-FFFFFF\",\"kind\":\"clamp\",\"samples\":[],") <= kNodeJsonBytes);
 }
 
 void test_with_no_samples_there_is_no_batch() {
@@ -273,26 +283,55 @@ void test_nodes_are_in_the_order_of_their_first_sample_and_samples_are_in_the_or
       body(rig).c_str());
 }
 
-void test_a_batch_has_at_most_16_nodes_and_the_rest_goes_in_the_next_batch() {
+void test_a_batch_has_at_most_16_nodes_and_takes_all_their_samples_and_the_rest_goes_in_the_next_batch() {
   Rig rig;
   for (uint32_t n = 1; n <= 20; n++) {
     rig.pairPlug(n);
-    put(rig, kNow, n, powerOnly(0, 10 * n));
+  }
+  // The nodes send in turn, as nodes with the same interval do, so no node has its samples together in the pool.
+  for (uint32_t round = 0; round < 3; round++) {
+    for (uint32_t n = 1; n <= 20; n++) {
+      put(rig, kNow, n, powerOnly(round, 10 * n + round));
+    }
   }
   TEST_ASSERT_EQUAL_INT(result(BatchPrepare::Ready), result(prepare(rig)));
   TEST_ASSERT_EQUAL_UINT(16, rig.builder.nodeCount());
-  TEST_ASSERT_EQUAL_UINT(16, rig.builder.sampleCount());
+  // Every sample of the 16 nodes is in the batch, and the samples of the 4 other nodes wait.
+  TEST_ASSERT_EQUAL_UINT(48, rig.builder.sampleCount());
+  TEST_ASSERT_EQUAL_UINT(16, countOf(body(rig), "\"nodeId\""));
+  TEST_ASSERT_EQUAL_UINT(48, countOf(body(rig), "{\"t\":"));
   TEST_ASSERT_EQUAL_UINT32(1, rig.builder.seq());
   rig.builder.markSent(kNow);
   rig.builder.onAck(1);
-  TEST_ASSERT_EQUAL_UINT(4, rig.store.size());
+  TEST_ASSERT_EQUAL_UINT(12, rig.store.size());
   TEST_ASSERT_EQUAL_INT(result(BatchPrepare::Ready), result(prepare(rig, kNow + 6000, kEpoch + 6)));
   TEST_ASSERT_EQUAL_UINT(4, rig.builder.nodeCount());
+  TEST_ASSERT_EQUAL_UINT(12, rig.builder.sampleCount());
   TEST_ASSERT_EQUAL_UINT32(2, rig.builder.seq());
   // The ids are in hex, so node 17 is PLUG-000011 and node 20 is PLUG-000014.
-  TEST_ASSERT_TRUE(body(rig).find("PLUG-000011") != std::string::npos);
-  TEST_ASSERT_TRUE(body(rig).find("PLUG-000014") != std::string::npos);
-  TEST_ASSERT_TRUE(body(rig).find("PLUG-000010") == std::string::npos);
+  const std::string second = body(rig);
+  TEST_ASSERT_TRUE(second.find("PLUG-000011") != std::string::npos);
+  TEST_ASSERT_TRUE(second.find("PLUG-000014") != std::string::npos);
+  TEST_ASSERT_TRUE(second.find("PLUG-000010") == std::string::npos);
+  rig.builder.markSent(kNow + 6000);
+  rig.builder.onAck(2);
+  TEST_ASSERT_EQUAL_UINT(0, rig.store.size());
+}
+
+void test_samples_that_come_in_after_a_batch_was_made_are_not_taken_with_it_and_other_nodes_stay() {
+  Rig rig;
+  rig.pairPlug(1);
+  rig.pairPlug(2);
+  put(rig, kNow, 1, powerOnly(0, 10));
+  TEST_ASSERT_EQUAL_INT(result(BatchPrepare::Ready), result(prepare(rig)));
+  rig.builder.markSent(kNow);
+  // A sample of the same node and one of a node that was not in the batch arrive while the batch waits.
+  put(rig, kNow + 100, 1, powerOnly(1, 20));
+  put(rig, kNow + 100, 2, powerOnly(0, 30));
+  rig.builder.onAck(1);
+  TEST_ASSERT_EQUAL_UINT(2, rig.store.size());
+  TEST_ASSERT_EQUAL_UINT32(20, rig.store.at(0).powerDeciW);
+  TEST_ASSERT_EQUAL_UINT32(30, rig.store.at(1).powerDeciW);
 }
 
 void test_a_node_with_many_samples_is_split_by_the_size_of_the_batch() {
@@ -390,7 +429,7 @@ void test_a_batch_that_was_sent_and_not_acknowledged_keeps_its_samples_and_its_n
   TEST_ASSERT_TRUE(body(rig).find("\"p\":9.9") != std::string::npos);
 }
 
-void test_a_batch_that_lost_samples_while_it_waited_shrinks_and_one_that_lost_all_is_gone() {
+void test_a_batch_that_lost_samples_while_it_waited_shrinks_and_one_that_lost_all_moves_the_number_on() {
   Rig rig;
   rig.pairPlug(1);
   for (uint32_t i = 0; i < 3; i++) {
@@ -404,10 +443,10 @@ void test_a_batch_that_lost_samples_while_it_waited_shrinks_and_one_that_lost_al
   TEST_ASSERT_EQUAL_UINT32(1, rig.builder.seq());
   rig.store.discardOldest(1);
   TEST_ASSERT_EQUAL_INT(result(BatchPrepare::NoSamples), result(prepare(rig, kNow + 12000, kEpoch + 12)));
-  // The number was not used, so the next batch is number 1 again.
+  // The service may have stored the batch that is gone, so its number is not used again. A real gap gives the answer 409.
   put(rig, kNow + 13000, 1, powerOnly(5, 50));
   TEST_ASSERT_EQUAL_INT(result(BatchPrepare::Ready), result(prepare(rig, kNow + 18000, kEpoch + 18)));
-  TEST_ASSERT_EQUAL_UINT32(1, rig.builder.seq());
+  TEST_ASSERT_EQUAL_UINT32(2, rig.builder.seq());
 }
 
 void test_the_answer_409_sets_the_number_of_the_batch_that_waits_and_of_the_next_one() {
@@ -575,6 +614,76 @@ void test_an_output_that_refuses_a_write_stops_the_batch() {
   TEST_ASSERT_TRUE(rig.builder.render(fits));
 }
 
+void test_the_first_batch_after_a_start_has_a_number_that_the_service_cannot_expect() {
+  Rig rig(false);
+  rig.pairPlug(1);
+  put(rig, kNow, 1, powerOnly(0, 10));
+  TEST_ASSERT_EQUAL_INT(result(BatchPrepare::Ready), result(prepare(rig)));
+  TEST_ASSERT_EQUAL_UINT32(kProbeSeq, rig.builder.seq());
+  TEST_ASSERT_TRUE(body(rig).find("{\"seq\":2147483647,") == 0);
+  rig.builder.markSent(kNow);
+  // The service answers 409 with the number to continue from, and the same samples go again with that number.
+  rig.builder.onExpectedSeq(5);
+  TEST_ASSERT_EQUAL_INT(result(BatchPrepare::Ready), result(prepare(rig, kNow + 6000, kEpoch + 6)));
+  TEST_ASSERT_EQUAL_UINT32(5, rig.builder.seq());
+  TEST_ASSERT_EQUAL_UINT(1, rig.builder.sampleCount());
+  rig.builder.markSent(kNow + 6000);
+  rig.builder.onAck(5);
+  TEST_ASSERT_EQUAL_UINT(0, rig.store.size());
+}
+
+void test_a_sample_that_is_almost_a_day_old_is_left_out_because_the_service_counts_from_a_later_clock() {
+  Rig rig;
+  rig.pairPlug(1);
+  put(rig, kNow, 1, powerOnly(0, 10, kKeepSampleMs + 1));
+  put(rig, kNow, 1, powerOnly(1, 20, kKeepSampleMs));
+  TEST_ASSERT_EQUAL_INT(result(BatchPrepare::Ready), result(prepare(rig)));
+  TEST_ASSERT_EQUAL_UINT(1, rig.builder.sampleCount());
+  TEST_ASSERT_EQUAL_UINT32(1, rig.builder.skipped());
+  TEST_ASSERT_TRUE(body(rig).find("\"p\":2.0") != std::string::npos);
+}
+
+void test_a_clock_value_from_before_the_arrival_of_a_sample_counts_as_no_age() {
+  Rig rig;
+  rig.pairPlug(1);
+  put(rig, kNow + 50, 1, powerOnly(0, 10));
+  // nowMs was read 50 ms before the sample came in, and the sample is not thrown away.
+  TEST_ASSERT_EQUAL_INT(result(BatchPrepare::Ready), result(prepare(rig, kNow)));
+  TEST_ASSERT_EQUAL_UINT(1, rig.builder.sampleCount());
+  TEST_ASSERT_EQUAL_UINT32(0, rig.builder.skipped());
+  TEST_ASSERT_TRUE(body(rig).find("{\"t\":1793618400,") != std::string::npos);
+}
+
+void test_the_longest_results_and_a_small_sample_fit_in_the_fixed_part_of_the_budget() {
+  Rig rig;
+  rig.pairPlug(1);
+  put(rig, kNow, 1, powerOnly(0, 10));
+  RelayResult results[64];
+  memset(results, 0, sizeof(results));
+  for (size_t i = 0; i < 64; i++) {
+    memset(results[i].id, 'a', 36);
+    results[i].id[36] = '\0';
+    results[i].ok = false;
+  }
+  TEST_ASSERT_EQUAL_INT(result(BatchPrepare::Ready), result(prepare(rig, kNow, kEpoch, results, 64)));
+  TEST_ASSERT_EQUAL_UINT(64, countOf(body(rig), "\"ok\":"));
+  TEST_ASSERT_TRUE(rig.builder.bodySize() < kFixedJsonBytes);
+}
+
+void test_the_acknowledgement_of_a_retry_drops_the_samples_of_the_batch() {
+  Rig rig;
+  rig.pairPlug(1);
+  put(rig, kNow, 1, powerOnly(0, 10));
+  prepare(rig);
+  rig.builder.markSent(kNow);
+  put(rig, kNow + 1000, 1, powerOnly(1, 20));
+  TEST_ASSERT_EQUAL_INT(result(BatchPrepare::Ready), result(prepare(rig, kNow + 6000, kEpoch + 6)));
+  rig.builder.markSent(kNow + 6000);
+  rig.builder.onAck(1);
+  TEST_ASSERT_EQUAL_UINT(1, rig.store.size());
+  TEST_ASSERT_EQUAL_UINT32(20, rig.store.at(0).powerDeciW);
+}
+
 int main() {
   UNITY_BEGIN();
   RUN_TEST(test_the_limits_are_the_ones_of_the_contract);
@@ -587,12 +696,13 @@ int main() {
   RUN_TEST(test_the_limits_of_each_value_are_written_in_full);
   RUN_TEST(test_the_time_of_a_sample_rounds_to_the_nearest_second_and_survives_the_wrap_of_the_clock);
   RUN_TEST(test_nodes_are_in_the_order_of_their_first_sample_and_samples_are_in_the_order_of_arrival);
-  RUN_TEST(test_a_batch_has_at_most_16_nodes_and_the_rest_goes_in_the_next_batch);
+  RUN_TEST(test_a_batch_has_at_most_16_nodes_and_takes_all_their_samples_and_the_rest_goes_in_the_next_batch);
+  RUN_TEST(test_samples_that_come_in_after_a_batch_was_made_are_not_taken_with_it_and_other_nodes_stay);
   RUN_TEST(test_a_node_with_many_samples_is_split_by_the_size_of_the_batch);
   RUN_TEST(test_a_full_pool_of_the_largest_samples_stays_below_the_budget_in_every_batch);
   RUN_TEST(test_the_acknowledgement_drops_the_samples_of_the_batch_and_leaves_the_later_ones);
   RUN_TEST(test_a_batch_that_was_sent_and_not_acknowledged_keeps_its_samples_and_its_number);
-  RUN_TEST(test_a_batch_that_lost_samples_while_it_waited_shrinks_and_one_that_lost_all_is_gone);
+  RUN_TEST(test_a_batch_that_lost_samples_while_it_waited_shrinks_and_one_that_lost_all_moves_the_number_on);
   RUN_TEST(test_the_answer_409_sets_the_number_of_the_batch_that_waits_and_of_the_next_one);
   RUN_TEST(test_an_acknowledgement_below_the_number_of_the_batch_is_not_ours);
   RUN_TEST(test_the_results_of_relay_commands_are_written_after_the_nodes);
@@ -603,5 +713,10 @@ int main() {
   RUN_TEST(test_a_sample_whose_time_the_service_would_refuse_is_left_out);
   RUN_TEST(test_a_node_that_is_removed_while_its_batch_waits_is_left_out_of_the_retry);
   RUN_TEST(test_an_output_that_refuses_a_write_stops_the_batch);
+  RUN_TEST(test_the_first_batch_after_a_start_has_a_number_that_the_service_cannot_expect);
+  RUN_TEST(test_a_sample_that_is_almost_a_day_old_is_left_out_because_the_service_counts_from_a_later_clock);
+  RUN_TEST(test_a_clock_value_from_before_the_arrival_of_a_sample_counts_as_no_age);
+  RUN_TEST(test_the_longest_results_and_a_small_sample_fit_in_the_fixed_part_of_the_budget);
+  RUN_TEST(test_the_acknowledgement_of_a_retry_drops_the_samples_of_the_batch);
   return UNITY_END();
 }

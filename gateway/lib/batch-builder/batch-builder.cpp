@@ -85,8 +85,8 @@ bool idIsSafe(const char *id) {
 BatchBuilder::BatchBuilder(SampleStore &store, const NodeRegistry &registry)
     : store_(store),
       registry_(registry),
-      nextSeq_(1),
-      seq_(1),
+      nextSeq_(kProbeSeq),
+      seq_(kProbeSeq),
       inFlight_(false),
       lastSerial_(0),
       sentOnce_(false),
@@ -103,10 +103,14 @@ BatchBuilder::BatchBuilder(SampleStore &store, const NodeRegistry &registry)
 }
 
 // The Unix time of a sample is the Unix time of the batch minus the age of the sample, rounded to a second. A sample that the service would refuse by its time is
-// left out here.
+// left out here. The service counts a day from its own clock, which is a little after sentAt, so the limit is the one of expire() and not a full day.
 bool BatchBuilder::sampleTime(const StoredSample &sample, uint32_t *seconds) const {
-  const uint32_t ageMs = nowMs_ - sample.capturedMs;
-  if (ageMs > kMaxSampleAgeMs) {
+  uint32_t ageMs = nowMs_ - sample.capturedMs;
+  if (static_cast<int32_t>(ageMs) < 0) {
+    // The clock value was read a moment before the sample came in.
+    ageMs = 0;
+  }
+  if (ageMs > kKeepSampleMs) {
     return false;
   }
   const uint32_t ageSeconds = (ageMs + 500) / 1000;
@@ -117,64 +121,85 @@ bool BatchBuilder::sampleTime(const StoredSample &sample, uint32_t *seconds) con
   return true;
 }
 
-// Looks at the samples from the oldest. A frozen plan takes every sample up to the last serial of the batch that was sent. A new plan takes samples until a limit
-// of the batch is reached. A sample whose node is not paired, or whose time the service would refuse, is passed over and goes with the batch that it sits in.
-// Returns false when the batch has no sample.
+// A sample that cannot go in any batch, for good: its node is not paired, or the service would refuse its time. A later clock does not change that.
+bool BatchBuilder::sendable(const StoredSample &sample) const {
+  uint32_t seconds = 0;
+  return registry_.kindOf(store_.macOf(sample)) != 0 && sampleTime(sample, &seconds);
+}
+
+int BatchBuilder::slotOf(uint8_t node) const {
+  for (size_t n = 0; n < nodeCount_; n++) {
+    if (nodeSlots_[n] == node) {
+      return static_cast<int>(n);
+    }
+  }
+  return -1;
+}
+
+// A sample is in the batch when its node is one of the nodes of the batch and it is not newer than the last sample that the batch took.
+bool BatchBuilder::inBatch(const StoredSample &sample) const {
+  return static_cast<int32_t>(sample.serial - lastSerial_) <= 0 && slotOf(sample.node) >= 0;
+}
+
+// A new plan drops the samples that cannot go in any batch, chooses up to 16 nodes from the oldest samples, and takes the samples of those nodes in the order of their
+// arrival until a limit is reached. A frozen plan keeps the nodes and the last serial of the batch that was sent, and counts again what is still there, so a batch only
+// shrinks. Returns false when the batch has no sample.
 bool BatchBuilder::plan(bool frozen) {
-  nodeCount_ = 0;
   sampleCount_ = 0;
   size_t perNode[kMaxBatchNodes];
   memset(perNode, 0, sizeof(perNode));
-  size_t estimate = kFixedJsonBytes;
-  uint32_t last = 0;
-  size_t looked = 0;
-  for (; looked < store_.size(); looked++) {
-    const StoredSample &sample = store_.at(looked);
-    if (frozen && static_cast<int32_t>(sample.serial - lastSerial_) > 0) {
+
+  if (!frozen) {
+    skipped_ += static_cast<uint32_t>(store_.removeWhere([this](const StoredSample &sample) { return !sendable(sample); }));
+    nodeCount_ = 0;
+    for (size_t i = 0; i < store_.size() && nodeCount_ < kMaxBatchNodes; i++) {
+      const uint8_t node = store_.at(i).node;
+      if (slotOf(node) < 0) {
+        nodeSlots_[nodeCount_++] = node;
+      }
+    }
+    size_t estimate = kFixedJsonBytes + nodeCount_ * kNodeJsonBytes;
+    for (size_t i = 0; i < store_.size(); i++) {
+      const StoredSample &sample = store_.at(i);
+      const int slot = slotOf(sample.node);
+      if (slot < 0) {
+        continue;
+      }
+      if (perNode[slot] >= kMaxBatchSamplesPerNode || sampleCount_ >= kMaxBatchSamples || estimate + kMaxSampleJsonBytes > kBatchBudgetBytes) {
+        break;
+      }
+      perNode[slot]++;
+      sampleCount_++;
+      estimate += kMaxSampleJsonBytes;
+      lastSerial_ = sample.serial;
+    }
+    return sampleCount_ > 0;
+  }
+
+  for (size_t i = 0; i < store_.size(); i++) {
+    const StoredSample &sample = store_.at(i);
+    if (static_cast<int32_t>(sample.serial - lastSerial_) > 0) {
       break;
     }
-    uint32_t seconds = 0;
-    if (registry_.kindOf(store_.macOf(sample)) == 0 || !sampleTime(sample, &seconds)) {
-      if (!frozen) {
-        skipped_++;
-      }
-      last = sample.serial;
-      continue;
+    const int slot = slotOf(sample.node);
+    if (slot >= 0 && sendable(sample)) {
+      perNode[slot]++;
+      sampleCount_++;
     }
-    int slot = -1;
-    for (size_t n = 0; n < nodeCount_; n++) {
-      if (nodeSlots_[n] == sample.node) {
-        slot = static_cast<int>(n);
-      }
-    }
-    const bool newNode = slot < 0;
-    if (!frozen) {
-      if ((newNode && nodeCount_ >= kMaxBatchNodes) || (!newNode && perNode[slot] >= kMaxBatchSamplesPerNode) || sampleCount_ >= kMaxBatchSamples ||
-          estimate + kMaxSampleJsonBytes + (newNode ? kNodeJsonBytes : 0) > kBatchBudgetBytes) {
-        break;
-      }
-    }
-    if (newNode) {
-      if (nodeCount_ >= kMaxBatchNodes) {
-        break;
-      }
-      slot = static_cast<int>(nodeCount_);
-      nodeSlots_[nodeCount_++] = sample.node;
-      estimate += kNodeJsonBytes;
-    }
-    perNode[slot]++;
-    sampleCount_++;
-    estimate += kMaxSampleJsonBytes;
-    last = sample.serial;
   }
   if (sampleCount_ == 0) {
-    // Everything that was looked at is passed over for good, and a later clock would not change that, so it goes.
-    store_.discardOldest(looked);
+    // Nothing of the batch can be sent now, so what is left of it goes.
+    store_.removeWhere([this](const StoredSample &sample) { return inBatch(sample); });
     return false;
   }
-  if (!frozen) {
-    lastSerial_ = last;
+  // A node that has no sample left is not in the batch, and its place in the table of the store may belong to another node by now.
+  size_t kept = 0;
+  for (size_t n = 0; n < nodeCount_; n++) {
+    if (perNode[n] > 0) {
+      nodeSlots_[kept++] = nodeSlots_[n];
+    }
   }
+  nodeCount_ = kept;
   return true;
 }
 
@@ -191,7 +216,12 @@ BatchPrepare BatchBuilder::prepare(uint32_t nowMs, uint32_t epochSeconds, const 
   resultCount_ = resultCount;
 
   if (!plan(inFlight_)) {
-    inFlight_ = false;
+    if (inFlight_) {
+      // The service may have stored the batch that is gone, and it answered too late for the hub. The next batch gets the next number, because the number of
+      // the lost one would be taken as a repeat, and a real gap gives the answer 409 with the number to continue from.
+      nextSeq_ = seq_ + 1;
+      inFlight_ = false;
+    }
     return BatchPrepare::NoSamples;
   }
   if (!inFlight_) {
@@ -307,12 +337,8 @@ void BatchBuilder::onAck(uint32_t ackSeq) {
   if (!inFlight_ || static_cast<int32_t>(ackSeq - seq_) < 0) {
     return;
   }
-  // The samples of the batch are at the front of the pool, because the batch took them from the oldest on.
-  size_t count = 0;
-  while (count < store_.size() && static_cast<int32_t>(store_.at(count).serial - lastSerial_) <= 0) {
-    count++;
-  }
-  store_.discardOldest(count);
+  // The samples of the batch are the ones of its nodes up to its last serial. The samples of the other nodes stay for a later batch.
+  store_.removeWhere([this](const StoredSample &sample) { return inBatch(sample); });
   inFlight_ = false;
   nextSeq_ = seq_ + 1;
 }

@@ -371,6 +371,16 @@ void test_expire_drops_samples_that_were_held_too_long_whatever_their_place_in_t
   TEST_ASSERT_EQUAL_UINT32(2, store.counts().expired);
 }
 
+void test_expire_with_a_clock_value_from_before_the_arrival_drops_nothing() {
+  SampleStore store;
+  Sample fresh = sampleWith(1);
+  fresh.ageMs = 0;
+  sendOne(store, 100050, kMacA, kBoot, fresh);
+  // nowMs was read 50 ms before the sample came in, so the sample is not 49 days old.
+  TEST_ASSERT_EQUAL_UINT(0, store.expire(100000));
+  TEST_ASSERT_EQUAL_UINT(1, store.size());
+}
+
 void test_expire_works_across_the_wrap_of_the_clock() {
   SampleStore store;
   Sample sample = sampleWith(1);
@@ -441,6 +451,7 @@ int main() {
   RUN_TEST(test_the_table_holds_64_nodes_and_refuses_a_65th_until_one_is_forgotten);
   RUN_TEST(test_a_frame_with_a_bad_power_and_a_good_sample_acknowledges_both);
   RUN_TEST(test_expire_drops_samples_that_were_held_too_long_whatever_their_place_in_the_pool);
+  RUN_TEST(test_expire_with_a_clock_value_from_before_the_arrival_drops_nothing);
   RUN_TEST(test_expire_works_across_the_wrap_of_the_clock);
   RUN_TEST(test_expire_works_when_the_pool_has_wrapped_around);
   RUN_TEST(test_a_full_pool_works_with_forget_and_a_push_after_a_discard_at_the_wrap);
