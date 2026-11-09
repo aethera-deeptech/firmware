@@ -3,14 +3,17 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include "pairing-key.h"
 #include "record-store.h"
 
 namespace wattlink {
 
 // The rules are in the sections "Identity", "Pairing and keys" and "Order and repeats" of docs/espnow-protocol.md.
 constexpr size_t kMaxNodes = 64;
-constexpr size_t kMacSize = 6;
 constexpr size_t kNodeKeySize = 16;
+
+// kMacSize and the size of a pairing key come from common/src/pairing-key.h, and the key that the registry keeps is the key that the pairing makes.
+static_assert(kNodeKeySize == kPairingKeySize, "the registry keeps the whole pairing key");
 
 // The kinds that the backend accepts. They are the values of NodeKind in common/src/payloads.h, and the firmware of the hub checks that at build time.
 constexpr uint8_t kKindPlug = 1;
