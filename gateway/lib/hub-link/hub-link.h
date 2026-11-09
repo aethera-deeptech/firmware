@@ -41,11 +41,17 @@ enum class LinkEventKind : uint8_t {
   Telemetry,        // a fresh TELEMETRY frame of a paired node, with the number of samples
   StoreFailed,      // a good frame of a paired node was dropped because the flash refused its new boot value
   HubBootMismatch,  // a frame of a paired node that names another boot of the hub, answered with an ACK that carries the right boot number
+  ResultReceived,   // a fresh RESULT frame of a paired node, with the command number in commandNumber and the answer in commandOk
 };
 
 struct LinkEvent {
   LinkEventKind kind;
   bool replied;              // a frame was handed to the radio
+  uint8_t mac[kMacSize];     // the radio address that the frame came from, set for every event
+  uint32_t frameBootId;      // the bootId and the counter of the frame, set for Telemetry, PairedNode and ResultReceived. A COMMAND echoes them.
+  uint32_t frameCounter;
+  uint16_t commandNumber;    // set for ResultReceived
+  bool commandOk;            // set for ResultReceived, true when the node says that the relay switched
   RequestResult request;     // set when the kind is PairRequest
   PairResult refusal;        // the reason when the request was refused, or when the pairing failed
   char nodeId[kNodeIdSize];  // set for an accepted PairRequest and for PairedNode
@@ -67,10 +73,19 @@ class HubLink {
   // A frame arrived from the radio address mac. Returns what happened. It never keeps the frame.
   LinkEvent onFrame(uint32_t nowMs, const uint8_t mac[kMacSize], const uint8_t *frame, size_t length);
 
+  // Sends a COMMAND to a paired node. The echo is the bootId and the counter of a TELEMETRY frame of that node, as the event of that frame names them.
+  // The action is 1 for on and 0 for off. Returns false when the node is not paired, the action is not 0 or 1, or the radio refused the frame.
+  // The command goes out with the counter of this class, so a pair of boot number and counter is never used twice with a key.
+  bool sendCommand(const uint8_t mac[kMacSize], uint32_t echoBootId, uint32_t echoCounter, uint16_t number, uint8_t action);
+
  private:
   void onHello(uint32_t nowMs, const uint8_t mac[kMacSize], const uint8_t *frame, size_t length, LinkEvent *event);
   void onPairRequest(uint32_t nowMs, const uint8_t mac[kMacSize], const uint8_t *frame, size_t length, LinkEvent *event);
   void onTelemetry(uint32_t nowMs, const uint8_t mac[kMacSize], const uint8_t *frame, size_t length, LinkEvent *event);
+  void onResult(uint32_t nowMs, const uint8_t mac[kMacSize], const uint8_t *frame, size_t length, LinkEvent *event);
+  // Checks the key, the freshness and the tag of a frame of a paired node and decodes nothing else. The registry is not changed.
+  bool openPaired(const uint8_t mac[kMacSize], const uint8_t *frame, size_t length, FrameType expected, Header *opened, uint8_t *payload,
+                  size_t *payloadLength) const;
   // The part that both paths share, once the payload of a verified frame is decoded and the frame is accepted by the registry.
   void deliver(uint32_t nowMs, const uint8_t mac[kMacSize], const Header &header, uint32_t hubBootId, const Sample *samples, size_t count,
                bool justPaired, LinkEvent *event);

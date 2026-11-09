@@ -11,6 +11,11 @@ void clearEvent(LinkEvent *event) {
   event->replied = false;
   event->request = RequestResult::NotOpen;
   event->refusal = PairResult::Ok;
+  memset(event->mac, 0, sizeof(event->mac));
+  event->frameBootId = 0;
+  event->frameCounter = 0;
+  event->commandNumber = 0;
+  event->commandOk = false;
   event->nodeId[0] = '\0';
   event->samples = 0;
 }
@@ -42,6 +47,7 @@ HubLink::HubLink(HubPairing &pairing, NodeRegistry &registry, RadioPort &radio, 
 LinkEvent HubLink::onFrame(uint32_t nowMs, const uint8_t mac[kMacSize], const uint8_t *frame, size_t length) {
   LinkEvent event;
   clearEvent(&event);
+  memcpy(event.mac, mac, kMacSize);
   Header header;
   // Before the boot number is known the hub is mute, and a frame from an address that no node has is not looked at, so it costs no limit.
   if (hubBootId_ == 0 || !validSender(mac) || !decodeHeader(frame, length, &header)) {
@@ -57,8 +63,11 @@ LinkEvent HubLink::onFrame(uint32_t nowMs, const uint8_t mac[kMacSize], const ui
     case FrameType::Telemetry:
       onTelemetry(nowMs, mac, frame, length, &event);
       break;
+    case FrameType::Result:
+      onResult(nowMs, mac, frame, length, &event);
+      break;
     default:
-      // RESULT comes with the commands. The other types go from the hub to a node, so a node that sends one is ignored.
+      // The other types go from the hub to a node, so a node that sends one is ignored.
       break;
   }
   return event;
@@ -146,17 +155,10 @@ void HubLink::onTelemetry(uint32_t nowMs, const uint8_t mac[kMacSize], const uin
 
   // A frame of a paired node. The freshness is checked before the tag, because it costs nothing, and the registry changes only after the tag
   // and the payload are good.
-  const uint8_t *key = registry_.keyOf(mac);
-  Header header;
-  if (key == nullptr || !decodeHeader(frame, length, &header) ||
-      registry_.check(mac, header.bootId, header.counter) != FrameCheck::Accepted) {
-    return;
-  }
   Header opened;
   uint8_t payload[kMaxPayloadSize];
   size_t payloadLength = 0;
-  if (!openFrame(crypto_.open, crypto_.context, key, Direction::NodeToHub, frame, length, &opened, payload, sizeof(payload), &payloadLength) ||
-      opened.type != FrameType::Telemetry) {
+  if (!openPaired(mac, frame, length, FrameType::Telemetry, &opened, payload, &payloadLength)) {
     return;
   }
   Sample samples[kMaxSamplesPerFrame];
@@ -177,6 +179,47 @@ void HubLink::onTelemetry(uint32_t nowMs, const uint8_t mac[kMacSize], const uin
   deliver(nowMs, mac, opened, boundBoot, samples, count, false, event);
 }
 
+bool HubLink::openPaired(const uint8_t mac[kMacSize], const uint8_t *frame, size_t length, FrameType expected, Header *opened, uint8_t *payload,
+                         size_t *payloadLength) const {
+  const uint8_t *key = registry_.keyOf(mac);
+  Header header;
+  if (key == nullptr || !decodeHeader(frame, length, &header) || registry_.check(mac, header.bootId, header.counter) != FrameCheck::Accepted) {
+    return false;
+  }
+  return openFrame(crypto_.open, crypto_.context, key, Direction::NodeToHub, frame, length, opened, payload, kMaxPayloadSize, payloadLength) &&
+         opened->type == expected;
+}
+
+void HubLink::onResult(uint32_t, const uint8_t mac[kMacSize], const uint8_t *frame, size_t length, LinkEvent *event) {
+  Header opened;
+  uint8_t payload[kMaxPayloadSize];
+  size_t payloadLength = 0;
+  Result result;
+  if (!openPaired(mac, frame, length, FrameType::Result, &opened, payload, &payloadLength) || !decodeResult(payload, payloadLength, &result)) {
+    return;
+  }
+  const FrameCheck stored = registry_.accept(mac, opened.bootId, opened.counter);
+  if (stored == FrameCheck::StoreFailed) {
+    event->kind = LinkEventKind::StoreFailed;
+    return;
+  }
+  if (stored != FrameCheck::Accepted) {
+    return;
+  }
+  if (result.hubBootId != hubBootId_) {
+    // The node names an old boot of the hub, so the result is dropped and the node learns the number from the ACK, as for TELEMETRY.
+    event->kind = LinkEventKind::HubBootMismatch;
+    event->replied = sendAck(mac, opened.bootId, kNoSampleSeq);
+    return;
+  }
+  event->kind = LinkEventKind::ResultReceived;
+  event->frameBootId = opened.bootId;
+  event->frameCounter = opened.counter;
+  event->commandNumber = result.number;
+  event->commandOk = result.ok == 1;
+  fillNodeId(mac, event);
+}
+
 void HubLink::deliver(uint32_t nowMs, const uint8_t mac[kMacSize], const Header &header, uint32_t hubBootId, const Sample *samples, size_t count,
                       bool justPaired, LinkEvent *event) {
   if (hubBootId != hubBootId_) {
@@ -188,6 +231,8 @@ void HubLink::deliver(uint32_t nowMs, const uint8_t mac[kMacSize], const Header 
   }
   const uint32_t highest = sink_.onSamples(nowMs, mac, header.bootId, samples, count);
   event->kind = justPaired ? LinkEventKind::PairedNode : LinkEventKind::Telemetry;
+  event->frameBootId = header.bootId;
+  event->frameCounter = header.counter;
   event->samples = count;
   if (justPaired) {
     fillNodeId(mac, event);
@@ -223,6 +268,26 @@ bool HubLink::sendAck(const uint8_t mac[kMacSize], uint32_t nodeBootId, uint32_t
     return false;
   }
   const Header header = {kProtocolVersion, FrameType::Ack, hubBootId_, counter_++};
+  uint8_t out[kMaxFrameSize];
+  const size_t size = sealFrame(crypto_.seal, crypto_.context, key, header, payload, sizeof(payload), out, sizeof(out));
+  return size > 0 && radio_.send(mac, out, size);
+}
+
+bool HubLink::sendCommand(const uint8_t mac[kMacSize], uint32_t echoBootId, uint32_t echoCounter, uint16_t number, uint8_t action) {
+  const uint8_t *key = registry_.keyOf(mac);
+  if (key == nullptr || counter_ == kNoU32 || action > 1) {
+    return false;
+  }
+  Command command;
+  command.echoBootId = echoBootId;
+  command.echoCounter = echoCounter;
+  command.number = number;
+  command.action = action;
+  uint8_t payload[kCommandSize];
+  if (encodeCommand(command, payload, sizeof(payload)) != kCommandSize) {
+    return false;
+  }
+  const Header header = {kProtocolVersion, FrameType::Command, hubBootId_, counter_++};
   uint8_t out[kMaxFrameSize];
   const size_t size = sealFrame(crypto_.seal, crypto_.context, key, header, payload, sizeof(payload), out, sizeof(out));
   return size > 0 && radio_.send(mac, out, size);
