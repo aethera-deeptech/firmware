@@ -15,15 +15,26 @@ void clearEvent(LinkEvent *event) {
   event->samples = 0;
 }
 
+// A radio address of a node has bit 0 of its first byte clear (no group address) and is not all zero, as the registry checks too.
+bool validSender(const uint8_t mac[kMacSize]) {
+  bool allZero = true;
+  for (size_t i = 0; i < kMacSize; i++) {
+    if (mac[i] != 0) {
+      allZero = false;
+    }
+  }
+  return !allZero && (mac[0] & 0x01) == 0;
+}
+
 }  // namespace
 
-HubLink::HubLink(HubPairing &pairing, NodeRegistry &registry, RadioPort &radio, SampleSink &sink, const HubCrypto &crypto, uint32_t hubBootId)
+HubLink::HubLink(HubPairing &pairing, NodeRegistry &registry, RadioPort &radio, SampleSink &sink, const HubCrypto &crypto)
     : pairing_(pairing),
       registry_(registry),
       radio_(radio),
       sink_(sink),
       crypto_(crypto),
-      hubBootId_(hubBootId),
+      hubBootId_(pairing.hubBootId()),
       counter_(0),
       helloWindowStart_(0),
       helloCount_(0) {}
@@ -32,7 +43,8 @@ LinkEvent HubLink::onFrame(uint32_t nowMs, const uint8_t mac[kMacSize], const ui
   LinkEvent event;
   clearEvent(&event);
   Header header;
-  if (!decodeHeader(frame, length, &header)) {
+  // Before the boot number is known the hub is mute, and a frame from an address that no node has is not looked at, so it costs no limit.
+  if (hubBootId_ == 0 || !validSender(mac) || !decodeHeader(frame, length, &header)) {
     return event;
   }
   switch (header.type) {
@@ -111,6 +123,7 @@ void HubLink::onTelemetry(uint32_t nowMs, const uint8_t mac[kMacSize], const uin
       if (!decodeTelemetryPayload(first.payload, first.payloadLength, &boundBoot, samples, kMaxSamplesPerFrame, &count)) {
         // The frame is authentic and the node is stored, but the payload is not usable. The node sends again.
         event->kind = LinkEventKind::PairedNoAck;
+        fillNodeId(mac, event);
         return;
       }
       deliver(mac, first.header, boundBoot, samples, count, true, event);
@@ -118,6 +131,7 @@ void HubLink::onTelemetry(uint32_t nowMs, const uint8_t mac[kMacSize], const uin
     }
     case FirstFrameResult::PairedNoFrame:
       event->kind = LinkEventKind::PairedNoAck;
+      fillNodeId(mac, event);
       return;
     case FirstFrameResult::PairFailed:
       event->kind = LinkEventKind::PairingFailed;
@@ -148,8 +162,16 @@ void HubLink::onTelemetry(uint32_t nowMs, const uint8_t mac[kMacSize], const uin
   Sample samples[kMaxSamplesPerFrame];
   size_t count = 0;
   uint32_t boundBoot = 0;
-  if (!decodeTelemetryPayload(payload, payloadLength, &boundBoot, samples, kMaxSamplesPerFrame, &count) ||
-      registry_.accept(mac, opened.bootId, opened.counter) != FrameCheck::Accepted) {
+  if (!decodeTelemetryPayload(payload, payloadLength, &boundBoot, samples, kMaxSamplesPerFrame, &count)) {
+    return;
+  }
+  const FrameCheck stored = registry_.accept(mac, opened.bootId, opened.counter);
+  if (stored == FrameCheck::StoreFailed) {
+    // The frame is good, but the flash refused its new boot value, so it is dropped and the node sends again. The caller can show the flash fault.
+    event->kind = LinkEventKind::StoreFailed;
+    return;
+  }
+  if (stored != FrameCheck::Accepted) {
     return;
   }
   deliver(mac, opened, boundBoot, samples, count, false, event);
@@ -168,9 +190,13 @@ void HubLink::deliver(const uint8_t mac[kMacSize], const Header &header, uint32_
   event->kind = justPaired ? LinkEventKind::PairedNode : LinkEventKind::Telemetry;
   event->samples = count;
   if (justPaired) {
-    makeNodeId(registry_.kindOf(mac), mac, event->nodeId);
+    fillNodeId(mac, event);
   }
   event->replied = sendAck(mac, header.bootId, highest);
+}
+
+void HubLink::fillNodeId(const uint8_t mac[kMacSize], LinkEvent *event) const {
+  makeNodeId(registry_.kindOf(mac), mac, event->nodeId);
 }
 
 bool HubLink::sendPlain(const uint8_t mac[kMacSize], FrameType type, const uint8_t *payload, size_t length) {

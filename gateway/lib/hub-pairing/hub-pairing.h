@@ -94,6 +94,9 @@ class HubPairing {
 
   bool pending() const { return pending_; }
 
+  // The boot number that the first TELEMETRY frame must carry. HubLink reads it from here, so the two never hold different values.
+  uint32_t hubBootId() const { return hubBootId_; }
+
  private:
   void wipePending();
 

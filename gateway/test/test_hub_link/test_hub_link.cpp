@@ -62,11 +62,11 @@ class FakeSink : public SampleSink {
 };
 
 struct Rig {
-  Rig()
+  explicit Rig(uint32_t hubBootId = kHubBootId)
       : registry(store),
         crypto{&knobs, fakeHmac, fakeOpen, fakeSeal, fakeGenerate, fakeAgree},
-        pairing(window, registry, crypto, kHubMac, kHubBootId),
-        link(pairing, registry, radio, sink, crypto, kHubBootId) {
+        pairing(window, registry, crypto, kHubMac, hubBootId),
+        link(pairing, registry, radio, sink, crypto) {
     registry.load();
   }
 
@@ -137,6 +137,19 @@ size_t telemetryFrame(const uint8_t key[kAesKeySize], uint32_t bootId, uint32_t 
   sample.sampleSeq = sampleSeq;
   uint8_t payload[kMaxPayloadSize];
   const size_t length = encodeTelemetryPayload(hubBootId, &sample, 1, payload, sizeof(payload));
+  const Header header = {kProtocolVersion, FrameType::Telemetry, bootId, counter};
+  const size_t size = sealFrame(fakeSeal, nullptr, key, header, payload, length, out, kMaxFrameSize);
+  TEST_ASSERT_TRUE(size > 0);
+  return size;
+}
+
+// A frame with a TELEMETRY header whose payload says 2 samples but holds 1. The length fits the type, so it can be sealed, and the payload
+// does not decode.
+size_t malformedTelemetryFrame(const uint8_t key[kAesKeySize], uint32_t bootId, uint32_t counter, uint8_t *out) {
+  Sample sample = {};
+  uint8_t payload[kMaxPayloadSize];
+  const size_t length = encodeTelemetryPayload(kHubBootId, &sample, 1, payload, sizeof(payload));
+  payload[4] = 2;
   const Header header = {kProtocolVersion, FrameType::Telemetry, bootId, counter};
   const size_t size = sealFrame(fakeSeal, nullptr, key, header, payload, length, out, kMaxFrameSize);
   TEST_ASSERT_TRUE(size > 0);
@@ -276,7 +289,7 @@ void test_frames_that_are_not_valid_or_not_for_the_hub_are_ignored() {
   TEST_ASSERT_EQUAL_UINT(0, rig.radio.count);
 }
 
-void test_frames_of_the_direction_hub_to_node_and_result_frames_are_ignored() {
+void test_frames_of_a_hub_to_node_type_and_result_frames_are_ignored_by_type() {
   Rig rig;
   NodeSim node = makeNode(1);
   pairNode(rig, &node, 0);
@@ -435,6 +448,7 @@ void test_a_boot_value_that_cannot_be_stored_leaves_the_node_paired_without_an_a
   const LinkEvent event = telemetry(rig, node, 20, kNodeBootId, 0, 0);
   TEST_ASSERT_EQUAL_INT(kind(LinkEventKind::PairedNoAck), kind(event));
   TEST_ASSERT_FALSE(event.replied);
+  TEST_ASSERT_EQUAL_STRING("PLUG-000001", event.nodeId);
   TEST_ASSERT_TRUE(rig.registry.isPaired(node.mac));
   TEST_ASSERT_EQUAL_UINT(1, rig.radio.count);
   TEST_ASSERT_EQUAL_INT(0, rig.sink.calls);
@@ -579,6 +593,135 @@ void test_a_node_that_is_removed_is_no_longer_answered() {
   TEST_ASSERT_EQUAL_UINT(sent, rig.radio.count);
 }
 
+void test_a_frame_from_an_address_that_no_node_has_is_ignored_and_costs_no_limit() {
+  Rig rig;
+  NodeSim zero = makeNode(1);
+  memset(zero.mac, 0, kMacSize);
+  NodeSim group = makeNode(1);
+  const uint8_t groupMac[kMacSize] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
+  memcpy(group.mac, groupMac, kMacSize);
+  for (int i = 0; i < 10; i++) {
+    TEST_ASSERT_EQUAL_INT(kind(LinkEventKind::Ignored), kind(hello(rig, zero, 0)));
+    TEST_ASSERT_EQUAL_INT(kind(LinkEventKind::Ignored), kind(hello(rig, group, 0)));
+    TEST_ASSERT_EQUAL_INT(kind(LinkEventKind::Ignored), kind(request(rig, group, 0)));
+  }
+  TEST_ASSERT_EQUAL_UINT(0, rig.radio.count);
+  // The five answers of the window are still there for a real node.
+  for (int i = 0; i < 5; i++) {
+    TEST_ASSERT_EQUAL_INT(kind(LinkEventKind::HelloAnswered), kind(hello(rig, makeNode(1), 0)));
+  }
+}
+
+void test_a_hub_with_no_boot_number_is_mute() {
+  Rig rig(0);
+  NodeSim node = makeNode(1);
+  rig.window.press(0);
+  TEST_ASSERT_EQUAL_INT(kind(LinkEventKind::Ignored), kind(hello(rig, node, 0)));
+  TEST_ASSERT_EQUAL_INT(kind(LinkEventKind::Ignored), kind(request(rig, node, 0)));
+  TEST_ASSERT_EQUAL_INT(kind(LinkEventKind::Ignored), kind(telemetry(rig, node, 0, 1, 0, 0, 0)));
+  TEST_ASSERT_EQUAL_INT(0, rig.radio.attempts);
+  TEST_ASSERT_FALSE(rig.pairing.pending());
+}
+
+void test_a_frame_that_the_radio_refuses_still_uses_up_its_counter() {
+  Rig rig;
+  const NodeSim node = makeNode(1);
+  rig.radio.fail = true;
+  hello(rig, node, 0);
+  rig.radio.fail = false;
+  hello(rig, node, 10);
+  TEST_ASSERT_EQUAL_UINT(1, rig.radio.count);
+  Header header;
+  TEST_ASSERT_TRUE(decodeHeader(rig.radio.sent[0].data, rig.radio.sent[0].length, &header));
+  TEST_ASSERT_EQUAL_UINT32(1, header.counter);
+}
+
+void test_a_second_pair_request_is_busy_and_gets_no_answer() {
+  Rig rig;
+  const NodeSim first = makeNode(1);
+  const NodeSim second = makeNode(2);
+  rig.window.press(0);
+  request(rig, first, 10);
+  const LinkEvent event = request(rig, second, 20);
+  TEST_ASSERT_EQUAL_INT(kind(LinkEventKind::PairRequest), kind(event));
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(RequestResult::Busy), static_cast<int>(event.request));
+  TEST_ASSERT_FALSE(event.replied);
+  TEST_ASSERT_EQUAL_UINT(1, rig.radio.count);
+}
+
+void test_a_paired_node_is_served_while_another_node_is_pending() {
+  Rig rig;
+  NodeSim paired = makeNode(1);
+  pairNode(rig, &paired, 0);
+  NodeSim pending = makeNode(2);
+  rig.window.press(1000);
+  request(rig, pending, 1010);
+  takeKey(rig, &pending);
+  TEST_ASSERT_EQUAL_INT(kind(LinkEventKind::Telemetry), kind(telemetry(rig, paired, 1020, kNodeBootId, 1, 4)));
+  TEST_ASSERT_TRUE(rig.pairing.pending());
+  TEST_ASSERT_EQUAL_INT(kind(LinkEventKind::PairedNode), kind(telemetry(rig, pending, 1030, kNodeBootId, 0, 0)));
+}
+
+void test_a_first_frame_after_the_wait_is_over_is_ignored() {
+  Rig rig;
+  NodeSim node = makeNode(1);
+  rig.window.press(0);
+  request(rig, node, 10);
+  takeKey(rig, &node);
+  const size_t sent = rig.radio.count;
+  TEST_ASSERT_EQUAL_INT(kind(LinkEventKind::Ignored), kind(telemetry(rig, node, 10 + kPairingPendingMs, kNodeBootId, 0, 0)));
+  TEST_ASSERT_FALSE(rig.registry.isPaired(node.mac));
+  TEST_ASSERT_EQUAL_UINT(sent, rig.radio.count);
+  TEST_ASSERT_EQUAL_INT(0, rig.sink.calls);
+}
+
+void test_an_authentic_frame_with_a_payload_that_does_not_decode_changes_nothing() {
+  Rig rig;
+  NodeSim node = makeNode(1);
+  pairNode(rig, &node, 0);
+  const size_t sent = rig.radio.count;
+  uint8_t frame[kMaxFrameSize];
+  const size_t size = malformedTelemetryFrame(node.key, kNodeBootId, 6, frame);
+  TEST_ASSERT_EQUAL_INT(kind(LinkEventKind::Ignored), kind(rig.link.onFrame(10, node.mac, frame, size)));
+  TEST_ASSERT_EQUAL_UINT(sent, rig.radio.count);
+  // The counter was not used up, so the same counter is still good with a payload that decodes.
+  TEST_ASSERT_EQUAL_INT(kind(LinkEventKind::Telemetry), kind(telemetry(rig, node, 20, kNodeBootId, 6, 1)));
+}
+
+void test_a_first_frame_with_a_payload_that_does_not_decode_pairs_the_node_without_an_ack() {
+  Rig rig;
+  NodeSim node = makeNode(1);
+  rig.window.press(0);
+  request(rig, node, 10);
+  takeKey(rig, &node);
+  uint8_t frame[kMaxFrameSize];
+  const size_t size = malformedTelemetryFrame(node.key, kNodeBootId, 0, frame);
+  const LinkEvent event = rig.link.onFrame(20, node.mac, frame, size);
+  TEST_ASSERT_EQUAL_INT(kind(LinkEventKind::PairedNoAck), kind(event));
+  TEST_ASSERT_EQUAL_STRING("PLUG-000001", event.nodeId);
+  TEST_ASSERT_FALSE(event.replied);
+  TEST_ASSERT_TRUE(rig.registry.isPaired(node.mac));
+  TEST_ASSERT_EQUAL_UINT(1, rig.radio.count);
+  TEST_ASSERT_EQUAL_INT(kind(LinkEventKind::Telemetry), kind(telemetry(rig, node, 30, kNodeBootId, 1, 0)));
+}
+
+void test_a_flash_that_refuses_a_new_boot_value_is_reported_and_the_frame_is_dropped() {
+  Rig rig;
+  NodeSim node = makeNode(1);
+  pairNode(rig, &node, 0);
+  const size_t sent = rig.radio.count;
+  const int calls = rig.sink.calls;
+  rig.store.failWrites = true;
+  const LinkEvent event = telemetry(rig, node, 10, kNodeBootId + 1, 0, 1);
+  TEST_ASSERT_EQUAL_INT(kind(LinkEventKind::StoreFailed), kind(event));
+  TEST_ASSERT_FALSE(event.replied);
+  TEST_ASSERT_EQUAL_UINT(sent, rig.radio.count);
+  TEST_ASSERT_EQUAL_INT(calls, rig.sink.calls);
+  // The node sends again, and the frame is taken once the flash works.
+  rig.store.failWrites = false;
+  TEST_ASSERT_EQUAL_INT(kind(LinkEventKind::Telemetry), kind(telemetry(rig, node, 20, kNodeBootId + 1, 0, 1)));
+}
+
 int main() {
   UNITY_BEGIN();
   RUN_TEST(test_a_hello_is_answered_with_a_hello_ack_to_the_sender);
@@ -586,7 +729,7 @@ int main() {
   RUN_TEST(test_the_hello_limit_works_across_the_wrap_of_the_clock);
   RUN_TEST(test_a_radio_that_refuses_the_hello_ack_is_reported);
   RUN_TEST(test_frames_that_are_not_valid_or_not_for_the_hub_are_ignored);
-  RUN_TEST(test_frames_of_the_direction_hub_to_node_and_result_frames_are_ignored);
+  RUN_TEST(test_frames_of_a_hub_to_node_type_and_result_frames_are_ignored_by_type);
   RUN_TEST(test_a_pair_request_in_an_open_window_gets_a_pair_accept);
   RUN_TEST(test_a_pair_request_that_is_refused_gets_no_answer);
   RUN_TEST(test_the_first_frame_pairs_the_node_stores_its_samples_and_gets_an_ack);
@@ -603,5 +746,14 @@ int main() {
   RUN_TEST(test_a_frame_with_another_hub_boot_number_gets_an_ack_with_the_right_one_and_no_sample_is_taken);
   RUN_TEST(test_a_radio_that_refuses_an_ack_is_reported_and_the_samples_are_kept);
   RUN_TEST(test_a_node_that_is_removed_is_no_longer_answered);
+  RUN_TEST(test_a_frame_from_an_address_that_no_node_has_is_ignored_and_costs_no_limit);
+  RUN_TEST(test_a_hub_with_no_boot_number_is_mute);
+  RUN_TEST(test_a_frame_that_the_radio_refuses_still_uses_up_its_counter);
+  RUN_TEST(test_a_second_pair_request_is_busy_and_gets_no_answer);
+  RUN_TEST(test_a_paired_node_is_served_while_another_node_is_pending);
+  RUN_TEST(test_a_first_frame_after_the_wait_is_over_is_ignored);
+  RUN_TEST(test_an_authentic_frame_with_a_payload_that_does_not_decode_changes_nothing);
+  RUN_TEST(test_a_first_frame_with_a_payload_that_does_not_decode_pairs_the_node_without_an_ack);
+  RUN_TEST(test_a_flash_that_refuses_a_new_boot_value_is_reported_and_the_frame_is_dropped);
   return UNITY_END();
 }

@@ -49,6 +49,7 @@ enum class LinkEventKind : uint8_t {
   PairedNoAck,      // the node is stored as paired, but its first frame could not be answered, so the node sends again
   PairingFailed,    // the registry refused or could not store the pairing, and nothing is paired
   Telemetry,        // a fresh TELEMETRY frame of a paired node, with the number of samples
+  StoreFailed,      // a good frame of a paired node was dropped because the flash refused its new boot value
   HubBootMismatch,  // a frame of a paired node that names another boot of the hub, answered with an ACK that carries the right boot number
 };
 
@@ -63,9 +64,12 @@ struct LinkEvent {
 
 class HubLink {
  public:
-  // hubBootId is the boot number of the hub for this start. It must already be in flash, because the hub sends no frame before that.
+  // The boot number of the hub comes from the pairing, so both use one value. It must already be in flash, because the hub sends no frame before
+  // that, and a value of 0 means that it was not read, so the hub then ignores every frame and sends nothing.
   // The crypto must have open and seal, and it must be the same crypto that pairing has.
-  HubLink(HubPairing &pairing, NodeRegistry &registry, RadioPort &radio, SampleSink &sink, const HubCrypto &crypto, uint32_t hubBootId);
+  // The counter of the frames that the hub sends belongs to this class, so the sender of the COMMAND frames must go through it too, or a pair of
+  // boot number and counter could be used twice with one key.
+  HubLink(HubPairing &pairing, NodeRegistry &registry, RadioPort &radio, SampleSink &sink, const HubCrypto &crypto);
 
   HubLink(const HubLink &) = delete;
   HubLink &operator=(const HubLink &) = delete;
@@ -80,6 +84,7 @@ class HubLink {
   // The part that both paths share, once the payload of a verified frame is decoded and the frame is accepted by the registry.
   void deliver(const uint8_t mac[kMacSize], const Header &header, uint32_t hubBootId, const Sample *samples, size_t count, bool justPaired,
                LinkEvent *event);
+  void fillNodeId(const uint8_t mac[kMacSize], LinkEvent *event) const;
   bool helloAllowed(uint32_t nowMs);
   bool sendPlain(const uint8_t mac[kMacSize], FrameType type, const uint8_t *payload, size_t length);
   bool sendAck(const uint8_t mac[kMacSize], uint32_t nodeBootId, uint32_t highestSampleSeq);
