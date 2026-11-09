@@ -31,6 +31,9 @@ constexpr size_t kNodeJsonBytes = 80;
 constexpr size_t kFixedJsonBytes = 6000;  // the frame of the batch and 64 results
 constexpr size_t kBatchBudgetBytes = 90000;
 static_assert(kBatchBudgetBytes < kMaxBodyBytes, "a batch must stay below the limit of the contract");
+// The least budget that still holds one sample when 16 nodes wait, because the choice counts every waiting node before the first sample. A smaller
+// budget given to the constructor is raised to this.
+constexpr size_t kMinBatchBudgetBytes = kFixedJsonBytes + kMaxBatchNodes * kNodeJsonBytes + kMaxSampleJsonBytes;
 
 // The service counts every batch, also a retry, and allows 600 in an hour, which is one every 6 seconds.
 constexpr uint32_t kMinBatchGapMs = 6000;
@@ -72,7 +75,9 @@ enum class BatchPrepare : uint8_t {
 
 class BatchBuilder {
  public:
-  BatchBuilder(SampleStore &store, const NodeRegistry &registry);
+  // The budget is the most bytes that a body may have. The client that renders the body into a buffer gives the size of that buffer, so a batch always fits.
+  // The value is kept between kMinBatchBudgetBytes and kBatchBudgetBytes.
+  BatchBuilder(SampleStore &store, const NodeRegistry &registry, size_t budgetBytes = kBatchBudgetBytes);
 
   BatchBuilder(const BatchBuilder &) = delete;
   BatchBuilder &operator=(const BatchBuilder &) = delete;
@@ -91,6 +96,7 @@ class BatchBuilder {
   size_t bodySize() const { return bodyBytes_; }
   size_t sampleCount() const { return sampleCount_; }
   size_t nodeCount() const { return nodeCount_; }
+  size_t budget() const { return budgetBytes_; }
 
   // Writes the body of the batch that prepare() made, and returns false when the output refused a write.
   bool render(BatchOutput &out) const;
@@ -116,6 +122,7 @@ class BatchBuilder {
 
   SampleStore &store_;
   const NodeRegistry &registry_;
+  size_t budgetBytes_;
   uint32_t nextSeq_;
   uint32_t seq_;
   bool inFlight_;

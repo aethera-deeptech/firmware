@@ -82,9 +82,10 @@ bool isSafeResultId(const char *id) {
   return true;
 }
 
-BatchBuilder::BatchBuilder(SampleStore &store, const NodeRegistry &registry)
+BatchBuilder::BatchBuilder(SampleStore &store, const NodeRegistry &registry, size_t budgetBytes)
     : store_(store),
       registry_(registry),
+      budgetBytes_(budgetBytes < kMinBatchBudgetBytes ? kMinBatchBudgetBytes : (budgetBytes > kBatchBudgetBytes ? kBatchBudgetBytes : budgetBytes)),
       nextSeq_(kProbeSeq),
       seq_(kProbeSeq),
       inFlight_(false),
@@ -165,7 +166,7 @@ bool BatchBuilder::plan(bool frozen) {
       if (slot < 0) {
         continue;
       }
-      if (perNode[slot] >= kMaxBatchSamplesPerNode || sampleCount_ >= kMaxBatchSamples || estimate + kMaxSampleJsonBytes > kBatchBudgetBytes) {
+      if (perNode[slot] >= kMaxBatchSamplesPerNode || sampleCount_ >= kMaxBatchSamples || estimate + kMaxSampleJsonBytes > budgetBytes_) {
         break;
       }
       perNode[slot]++;

@@ -54,7 +54,7 @@ class FailingOutput : public BatchOutput {
 
 // By default the builder has had its first 409, so the batches are numbered from 1, which keeps the other tests simple. The probe test makes one that has not.
 struct Rig {
-  explicit Rig(bool afterConflict = true) : registry(flash), builder(store, registry) {
+  explicit Rig(bool afterConflict = true, size_t budget = kBatchBudgetBytes) : registry(flash), builder(store, registry, budget) {
     registry.load();
     if (afterConflict) {
       builder.onExpectedSeq(1);
@@ -392,6 +392,104 @@ void test_a_full_pool_of_the_largest_samples_stays_below_the_budget_in_every_bat
   TEST_ASSERT_EQUAL_UINT(kSamplePoolSize, total);
 }
 
+void test_a_smaller_budget_keeps_every_batch_below_it_and_still_sends_every_sample() {
+  const size_t budget = 16384;
+  Rig rig(true, budget);
+  TEST_ASSERT_EQUAL_UINT(budget, rig.builder.budget());
+  for (uint8_t n = 1; n <= 8; n++) {
+    rig.pairPlug(n);
+  }
+  for (uint32_t i = 0; i < kSamplePoolSize; i++) {
+    Sample sample = fullSample(i / 8);
+    sample.ageMs = 0;
+    sample.voltageDeciV = kMaxVoltageDeciV;
+    sample.currentCentiA = kMaxCurrentCentiA;
+    sample.powerDeciW = kMaxPowerDeciW;
+    sample.energyWh = 4294967294u;
+    sample.frequencyDeciHz = kMaxFrequencyDeciHz;
+    sample.powerFactorCenti = kMaxPowerFactorCenti;
+    sample.condition = 3;
+    put(rig, kNow, static_cast<uint32_t>(1 + i % 8), sample);
+  }
+  size_t total = 0;
+  size_t batches = 0;
+  uint32_t now = kNow;
+  while (prepare(rig, now, kEpoch + (now - kNow) / 1000) == BatchPrepare::Ready) {
+    TEST_ASSERT_TRUE(rig.builder.bodySize() <= budget);
+    TEST_ASSERT_TRUE(rig.builder.sampleCount() > 0);
+    total += rig.builder.sampleCount();
+    batches++;
+    rig.builder.markSent(now);
+    rig.builder.onAck(rig.builder.seq());
+    now += kMinBatchGapMs;
+    TEST_ASSERT_TRUE(batches < 100);
+  }
+  TEST_ASSERT_EQUAL_UINT(kSamplePoolSize, total);
+  TEST_ASSERT_TRUE(batches > 10);
+}
+
+void test_a_budget_that_is_too_small_or_too_large_is_kept_inside_its_limits() {
+  Rig huge(true, 100000000);
+  TEST_ASSERT_EQUAL_UINT(kBatchBudgetBytes, huge.builder.budget());
+  Rig normal;
+  TEST_ASSERT_EQUAL_UINT(kBatchBudgetBytes, normal.builder.budget());
+  // The smallest budget still sends a sample when 1, 2 or 16 nodes wait, because the choice counts all waiting nodes before the first sample.
+  const uint32_t counts[] = {1, 2, 16};
+  for (uint32_t nodes : counts) {
+    Rig tiny(true, 10);
+    TEST_ASSERT_EQUAL_UINT(kMinBatchBudgetBytes, tiny.builder.budget());
+    for (uint32_t n = 1; n <= nodes; n++) {
+      tiny.pairPlug(n);
+      Sample sample = fullSample(1);
+      sample.ageMs = 0;
+      put(tiny, kNow, n, sample);
+    }
+    TEST_ASSERT_EQUAL_INT(result(BatchPrepare::Ready), result(prepare(tiny)));
+    TEST_ASSERT_TRUE(tiny.builder.sampleCount() >= 1);
+    TEST_ASSERT_TRUE(tiny.builder.bodySize() <= kMinBatchBudgetBytes);
+  }
+}
+
+void test_a_batch_with_64_results_stays_below_a_small_budget_also_on_a_retry() {
+  const size_t budget = 16384;
+  Rig rig(true, budget);
+  for (uint8_t n = 1; n <= 8; n++) {
+    rig.pairPlug(n);
+  }
+  for (uint32_t i = 0; i < 400; i++) {
+    Sample sample = fullSample(i / 8);
+    sample.ageMs = 0;
+    sample.voltageDeciV = kMaxVoltageDeciV;
+    sample.currentCentiA = kMaxCurrentCentiA;
+    sample.powerDeciW = kMaxPowerDeciW;
+    sample.energyWh = 4294967294u;
+    sample.frequencyDeciHz = kMaxFrequencyDeciHz;
+    sample.powerFactorCenti = kMaxPowerFactorCenti;
+    sample.condition = 3;
+    put(rig, kNow, static_cast<uint32_t>(1 + i % 8), sample);
+  }
+  RelayResult results[kMaxBatchResults];
+  memset(results, 0, sizeof(results));
+  for (size_t i = 0; i < kMaxBatchResults; i++) {
+    memset(results[i].id, 'a', kResultIdSize - 1);
+    results[i].ok = i % 2 == 0;
+  }
+  TEST_ASSERT_EQUAL_INT(result(BatchPrepare::Ready), result(prepare(rig, kNow, kEpoch, results, kMaxBatchResults)));
+  TEST_ASSERT_EQUAL_UINT(kMaxBatchResults, countOf(body(rig), "\"ok\":"));
+  TEST_ASSERT_TRUE(rig.builder.bodySize() <= budget);
+  const size_t first = rig.builder.sampleCount();
+  rig.builder.markSent(kNow);
+  // More samples come in while the batch waits, and the retry carries the same samples with the same limit.
+  for (uint32_t i = 0; i < 200; i++) {
+    Sample sample = fullSample(1000 + i);
+    sample.ageMs = 0;
+    put(rig, kNow + 100, static_cast<uint32_t>(1 + i % 8), sample);
+  }
+  TEST_ASSERT_EQUAL_INT(result(BatchPrepare::Ready), result(prepare(rig, kNow + kMinBatchGapMs, kEpoch + 6, results, kMaxBatchResults)));
+  TEST_ASSERT_EQUAL_UINT(first, rig.builder.sampleCount());
+  TEST_ASSERT_TRUE(rig.builder.bodySize() <= budget);
+}
+
 void test_the_acknowledgement_drops_the_samples_of_the_batch_and_leaves_the_later_ones() {
   Rig rig;
   rig.pairPlug(1);
@@ -705,6 +803,9 @@ int main() {
   RUN_TEST(test_samples_that_come_in_after_a_batch_was_made_are_not_taken_with_it_and_other_nodes_stay);
   RUN_TEST(test_a_full_pool_of_the_samples_of_eight_nodes_is_split_by_the_size_of_the_batch);
   RUN_TEST(test_a_full_pool_of_the_largest_samples_stays_below_the_budget_in_every_batch);
+  RUN_TEST(test_a_smaller_budget_keeps_every_batch_below_it_and_still_sends_every_sample);
+  RUN_TEST(test_a_budget_that_is_too_small_or_too_large_is_kept_inside_its_limits);
+  RUN_TEST(test_a_batch_with_64_results_stays_below_a_small_budget_also_on_a_retry);
   RUN_TEST(test_the_acknowledgement_drops_the_samples_of_the_batch_and_leaves_the_later_ones);
   RUN_TEST(test_a_batch_that_was_sent_and_not_acknowledged_keeps_its_samples_and_its_number);
   RUN_TEST(test_a_batch_that_lost_samples_while_it_waited_shrinks_and_one_that_lost_all_moves_the_number_on);
