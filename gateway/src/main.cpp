@@ -104,14 +104,14 @@ void setup() {
   nodes.load();
   Serial.printf("Nodes: %u paired, %u of %u ids used, %u damaged\n", static_cast<unsigned>(nodes.pairedCount()),
                 static_cast<unsigned>(nodes.idCount()), static_cast<unsigned>(wattlink::kMaxNodes), static_cast<unsigned>(nodes.damagedCount()));
-  // The boot number is written to flash and read back before any frame is sent. A first start while nodes are paired means that the counter was
-  // lost and the keys were not, so numbers could repeat with the old keys, and the hub then stays without a number like after a failure.
-  const wattlink::BootResult boot = bootCounter.next(&hubBootId);
-  if (boot == wattlink::BootResult::First && nodes.pairedCount() > 0) {
-    hubBootId = 0;
-  }
+  // The boot number is written to flash and read back before any frame is sent. When the counter is lost and keys are kept (paired or damaged
+  // slots), numbers could repeat with the old keys, so the counter gives none, at every start, until the keys are gone.
+  const bool keysExist = nodes.pairedCount() > 0 || nodes.damagedCount() > 0;
+  const wattlink::BootResult bootStatus = bootCounter.next(keysExist, &hubBootId);
   if (hubBootId != 0) {
     Serial.printf("Hub boot number: %lu\n", static_cast<unsigned long>(hubBootId));
+  } else if (bootStatus == wattlink::BootResult::Lost) {
+    Serial.println("Hub boot number: the counter was lost while nodes are paired, so the hub does not pair, erase the flash to start again");
   } else {
     Serial.println("Hub boot number: FAILED, the hub does not pair");
   }

@@ -28,6 +28,7 @@ class CounterStore {
 enum class BootResult : uint8_t {
   Ok,      // the number is the stored one plus 1
   First,   // no number was stored, so this is the first start of the hub, or the flash was erased. The number is 1.
+  Lost,    // no number was stored, but the caller says that keys exist, so nothing was written and the number is 0
   Failed,  // the number could not be read, written or confirmed, and the number is 0
 };
 
@@ -37,9 +38,11 @@ class BootCounter {
   explicit BootCounter(CounterStore &store) : store_(store) {}
 
   // Reads the stored number (one more try after a failed read), writes the next one, and reads it back. Sets *bootId to the new number, or to 0 when
-  // the result is Failed. A caller must not send a frame with a boot number of 0. A caller that gets First while nodes are paired must treat it
-  // as Failed, because the keys of the nodes outlived the counter.
-  BootResult next(uint32_t *bootId);
+  // the result is Lost or Failed. A caller must not send a frame with a boot number of 0.
+  // keysExist says that the hub holds keys of nodes, paired or damaged. When no number is stored and keys exist, the counter was lost and the keys
+  // were not, so a new number could repeat one that was used with those keys. The result is then Lost, and nothing is written, so it stays Lost
+  // at every start until the keys are gone. A stored 0 counts as no number, because the counter never writes 0.
+  BootResult next(bool keysExist, uint32_t *bootId);
 
  private:
   CounterStore &store_;

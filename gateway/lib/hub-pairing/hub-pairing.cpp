@@ -45,6 +45,10 @@ RequestResult HubPairing::onPairRequest(uint32_t nowMs, const uint8_t mac[kMacSi
   memset(outcome->acceptPayload, 0, sizeof(outcome->acceptPayload));
 
   update(nowMs);
+  // A boot number of 0 means that the hub has none, and a key made now could be used with a nonce that was used before.
+  if (hubBootId_ == 0) {
+    return RequestResult::NotOpen;
+  }
   if (window_.isPairing(nowMs)) {
     return RequestResult::Busy;
   }
@@ -104,7 +108,7 @@ FirstFrameResult HubPairing::onFrame(uint32_t nowMs, const uint8_t mac[kMacSize]
   memset(out->payload, 0, sizeof(out->payload));
 
   update(nowMs);
-  if (!pending_ || !window_.isPairing(nowMs) || memcmp(mac, pendingMac_, kMacSize) != 0) {
+  if (hubBootId_ == 0 || !pending_ || !window_.isPairing(nowMs) || memcmp(mac, pendingMac_, kMacSize) != 0) {
     return FirstFrameResult::NotPending;
   }
 

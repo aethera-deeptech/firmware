@@ -29,7 +29,7 @@ class FakeStore : public CounterStore {
     stale = value;
     value = in;
     present = true;
-    return true;
+    return !failWriteButStore;
   }
 
   uint32_t value = 0;
@@ -37,6 +37,7 @@ class FakeStore : public CounterStore {
   bool present = false;
   int failReads = 0;  // the next reads fail
   bool failWrite = false;
+  bool failWriteButStore = false;  // the write reports a failure but the flash holds the new value, as a power cut after the write would
   bool lieAfterWrite = false;  // a read after a write gives the old value, as a flash that lost the write would
   int reads = 0;
   int writes = 0;
@@ -55,7 +56,7 @@ void test_the_first_start_gives_1_and_is_marked_as_first() {
   FakeStore store;
   BootCounter counter(store);
   uint32_t id = 99;
-  TEST_ASSERT_EQUAL_INT(result(BootResult::First), result(counter.next(&id)));
+  TEST_ASSERT_EQUAL_INT(result(BootResult::First), result(counter.next(false, &id)));
   TEST_ASSERT_EQUAL_UINT32(1, id);
   TEST_ASSERT_TRUE(store.present);
   TEST_ASSERT_EQUAL_UINT32(1, store.value);
@@ -67,7 +68,7 @@ void test_every_start_gives_one_more_and_stores_it() {
   uint32_t id = 0;
   for (uint32_t expected = 1; expected <= 5; expected++) {
     BootCounter counter(store);  // a new object for each start, as after a reset
-    const BootResult got = counter.next(&id);
+    const BootResult got = counter.next(false, &id);
     TEST_ASSERT_EQUAL_INT(result(expected == 1 ? BootResult::First : BootResult::Ok), result(got));
     TEST_ASSERT_EQUAL_UINT32(expected, id);
     TEST_ASSERT_EQUAL_UINT32(expected, store.value);
@@ -80,7 +81,7 @@ void test_the_number_is_continued_from_what_the_flash_holds() {
   store.value = 41;
   BootCounter counter(store);
   uint32_t id = 0;
-  TEST_ASSERT_EQUAL_INT(result(BootResult::Ok), result(counter.next(&id)));
+  TEST_ASSERT_EQUAL_INT(result(BootResult::Ok), result(counter.next(false, &id)));
   TEST_ASSERT_EQUAL_UINT32(42, id);
 }
 
@@ -91,7 +92,7 @@ void test_a_read_that_fails_once_is_tried_again() {
   store.failReads = 1;
   BootCounter counter(store);
   uint32_t id = 0;
-  TEST_ASSERT_EQUAL_INT(result(BootResult::Ok), result(counter.next(&id)));
+  TEST_ASSERT_EQUAL_INT(result(BootResult::Ok), result(counter.next(false, &id)));
   TEST_ASSERT_EQUAL_UINT32(8, id);
 }
 
@@ -102,7 +103,7 @@ void test_a_read_that_fails_twice_gives_no_number_and_writes_nothing() {
   store.failReads = 2;
   BootCounter counter(store);
   uint32_t id = 99;
-  TEST_ASSERT_EQUAL_INT(result(BootResult::Failed), result(counter.next(&id)));
+  TEST_ASSERT_EQUAL_INT(result(BootResult::Failed), result(counter.next(false, &id)));
   TEST_ASSERT_EQUAL_UINT32(0, id);
   // A flash that cannot be read must not look like a first start, so nothing is written and no number is repeated.
   TEST_ASSERT_EQUAL_INT(0, store.writes);
@@ -114,7 +115,7 @@ void test_a_write_that_fails_gives_no_number() {
   store.failWrite = true;
   BootCounter counter(store);
   uint32_t id = 99;
-  TEST_ASSERT_EQUAL_INT(result(BootResult::Failed), result(counter.next(&id)));
+  TEST_ASSERT_EQUAL_INT(result(BootResult::Failed), result(counter.next(false, &id)));
   TEST_ASSERT_EQUAL_UINT32(0, id);
 }
 
@@ -125,7 +126,7 @@ void test_a_number_that_the_flash_does_not_give_back_is_not_used() {
   store.lieAfterWrite = true;
   BootCounter counter(store);
   uint32_t id = 99;
-  TEST_ASSERT_EQUAL_INT(result(BootResult::Failed), result(counter.next(&id)));
+  TEST_ASSERT_EQUAL_INT(result(BootResult::Failed), result(counter.next(false, &id)));
   TEST_ASSERT_EQUAL_UINT32(0, id);
 }
 
@@ -144,7 +145,7 @@ void test_a_read_back_that_fails_gives_no_number() {
     FakeStore &inner_;
   } wrapper(store);
   BootCounter wrapped(wrapper);
-  TEST_ASSERT_EQUAL_INT(result(BootResult::Failed), result(wrapped.next(&id)));
+  TEST_ASSERT_EQUAL_INT(result(BootResult::Failed), result(wrapped.next(false, &id)));
   TEST_ASSERT_EQUAL_UINT32(0, id);
 }
 
@@ -154,10 +155,10 @@ void test_the_highest_number_is_given_once_and_the_next_start_fails_without_a_wr
   store.value = kMaxBootId - 1;
   BootCounter counter(store);
   uint32_t id = 0;
-  TEST_ASSERT_EQUAL_INT(result(BootResult::Ok), result(counter.next(&id)));
+  TEST_ASSERT_EQUAL_INT(result(BootResult::Ok), result(counter.next(false, &id)));
   TEST_ASSERT_EQUAL_UINT32(kMaxBootId, id);
   const int writes = store.writes;
-  TEST_ASSERT_EQUAL_INT(result(BootResult::Failed), result(counter.next(&id)));
+  TEST_ASSERT_EQUAL_INT(result(BootResult::Failed), result(counter.next(false, &id)));
   TEST_ASSERT_EQUAL_UINT32(0, id);
   TEST_ASSERT_EQUAL_INT(writes, store.writes);
 }
@@ -168,7 +169,7 @@ void test_a_stored_number_above_the_limit_fails_and_is_not_wrapped() {
   store.value = 0xFFFFFFFFu;
   BootCounter counter(store);
   uint32_t id = 99;
-  TEST_ASSERT_EQUAL_INT(result(BootResult::Failed), result(counter.next(&id)));
+  TEST_ASSERT_EQUAL_INT(result(BootResult::Failed), result(counter.next(false, &id)));
   TEST_ASSERT_EQUAL_UINT32(0, id);
   TEST_ASSERT_EQUAL_INT(0, store.writes);
 }
@@ -177,14 +178,86 @@ void test_the_number_is_never_0() {
   FakeStore store;
   BootCounter counter(store);
   uint32_t id = 0;
-  counter.next(&id);
-  TEST_ASSERT_TRUE(id != 0);
-  // A stored 0 is the same as nothing, and the next number is 1.
-  FakeStore zero;
-  zero.present = true;
-  zero.value = 0;
-  BootCounter again(zero);
-  again.next(&id);
+  TEST_ASSERT_EQUAL_INT(result(BootResult::First), result(counter.next(false, &id)));
+  TEST_ASSERT_EQUAL_UINT32(1, id);
+}
+
+void test_a_stored_0_counts_as_no_number() {
+  FakeStore store;
+  store.present = true;
+  store.value = 0;
+  BootCounter counter(store);
+  uint32_t id = 99;
+  // With keys, a 0 is not a number that was used, so the counter is lost.
+  TEST_ASSERT_EQUAL_INT(result(BootResult::Lost), result(counter.next(true, &id)));
+  TEST_ASSERT_EQUAL_UINT32(0, id);
+  TEST_ASSERT_EQUAL_INT(0, store.writes);
+  // Without keys, it is a first start.
+  TEST_ASSERT_EQUAL_INT(result(BootResult::First), result(counter.next(false, &id)));
+  TEST_ASSERT_EQUAL_UINT32(1, id);
+}
+
+void test_a_lost_counter_with_keys_gives_no_number_writes_nothing_and_stays_lost() {
+  FakeStore store;
+  BootCounter counter(store);
+  uint32_t id = 99;
+  for (int start = 0; start < 3; start++) {
+    TEST_ASSERT_EQUAL_INT(result(BootResult::Lost), result(counter.next(true, &id)));
+    TEST_ASSERT_EQUAL_UINT32(0, id);
+  }
+  // Nothing was written, so the next start does not find a number that an earlier start made up.
+  TEST_ASSERT_EQUAL_INT(0, store.writes);
+  TEST_ASSERT_FALSE(store.present);
+}
+
+void test_keys_do_not_stop_a_counter_that_holds_a_number() {
+  FakeStore store;
+  store.present = true;
+  store.value = 12;
+  BootCounter counter(store);
+  uint32_t id = 0;
+  TEST_ASSERT_EQUAL_INT(result(BootResult::Ok), result(counter.next(true, &id)));
+  TEST_ASSERT_EQUAL_UINT32(13, id);
+}
+
+void test_a_write_that_fails_but_changes_the_flash_only_moves_the_number_forward() {
+  FakeStore store;
+  store.present = true;
+  store.value = 5;
+  store.failWriteButStore = true;
+  BootCounter counter(store);
+  uint32_t id = 99;
+  TEST_ASSERT_EQUAL_INT(result(BootResult::Failed), result(counter.next(false, &id)));
+  TEST_ASSERT_EQUAL_UINT32(0, id);
+  TEST_ASSERT_EQUAL_UINT32(6, store.value);
+  store.failWriteButStore = false;
+  BootCounter next(store);
+  TEST_ASSERT_EQUAL_INT(result(BootResult::Ok), result(next.next(false, &id)));
+  TEST_ASSERT_EQUAL_UINT32(7, id);
+}
+
+void test_a_number_that_was_not_confirmed_is_not_given_again() {
+  FakeStore store;
+  store.present = true;
+  store.value = 5;
+  store.lieAfterWrite = true;
+  BootCounter counter(store);
+  uint32_t id = 99;
+  TEST_ASSERT_EQUAL_INT(result(BootResult::Failed), result(counter.next(false, &id)));
+  TEST_ASSERT_EQUAL_UINT32(6, store.value);
+  // The flash works again, and the next start goes on from 6.
+  store.lieAfterWrite = false;
+  BootCounter again(store);
+  TEST_ASSERT_EQUAL_INT(result(BootResult::Ok), result(again.next(false, &id)));
+  TEST_ASSERT_EQUAL_UINT32(7, id);
+}
+
+void test_a_read_that_fails_once_and_then_finds_nothing_is_a_first_start() {
+  FakeStore store;
+  store.failReads = 1;
+  BootCounter counter(store);
+  uint32_t id = 0;
+  TEST_ASSERT_EQUAL_INT(result(BootResult::First), result(counter.next(false, &id)));
   TEST_ASSERT_EQUAL_UINT32(1, id);
 }
 
@@ -201,5 +274,11 @@ int main() {
   RUN_TEST(test_the_highest_number_is_given_once_and_the_next_start_fails_without_a_write);
   RUN_TEST(test_a_stored_number_above_the_limit_fails_and_is_not_wrapped);
   RUN_TEST(test_the_number_is_never_0);
+  RUN_TEST(test_a_stored_0_counts_as_no_number);
+  RUN_TEST(test_a_lost_counter_with_keys_gives_no_number_writes_nothing_and_stays_lost);
+  RUN_TEST(test_keys_do_not_stop_a_counter_that_holds_a_number);
+  RUN_TEST(test_a_write_that_fails_but_changes_the_flash_only_moves_the_number_forward);
+  RUN_TEST(test_a_number_that_was_not_confirmed_is_not_given_again);
+  RUN_TEST(test_a_read_that_fails_once_and_then_finds_nothing_is_a_first_start);
   return UNITY_END();
 }

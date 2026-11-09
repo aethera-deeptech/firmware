@@ -2,7 +2,7 @@
 
 namespace wattlink {
 
-BootResult BootCounter::next(uint32_t *bootId) {
+BootResult BootCounter::next(bool keysExist, uint32_t *bootId) {
   *bootId = 0;
   uint32_t previous = 0;
   CounterRead found = store_.read(&previous);
@@ -13,7 +13,13 @@ BootResult BootCounter::next(uint32_t *bootId) {
   if (found == CounterRead::Failed) {
     return BootResult::Failed;
   }
+  if (found == CounterRead::Ok && previous == 0) {
+    found = CounterRead::Missing;
+  }
   if (found == CounterRead::Missing) {
+    if (keysExist) {
+      return BootResult::Lost;
+    }
     previous = 0;
   }
   if (previous >= kMaxBootId) {
