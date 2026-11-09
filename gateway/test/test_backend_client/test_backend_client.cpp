@@ -53,8 +53,9 @@ struct Seen {
 
 class FakeHttp : public HttpPort {
  public:
-  bool begin(const HttpRequest &request) override {
+  bool begin(const HttpRequest &request, HttpResponse *response) override {
     beginCalls++;
+    out_ = response;
     if (refuse) {
       return false;
     }
@@ -70,7 +71,8 @@ class FakeHttp : public HttpPort {
     return true;
   }
 
-  bool poll(HttpResponse *out) override {
+  bool poll() override {
+    HttpResponse *out = out_;
     if (!running || hang) {
       return false;
     }
@@ -123,6 +125,7 @@ class FakeHttp : public HttpPort {
 
   std::deque<Reply> replies;
   std::deque<Seen> requests;
+  HttpResponse *out_ = nullptr;
   bool refuse = false;
   bool hang = false;
   bool running = false;

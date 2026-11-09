@@ -79,15 +79,17 @@ struct HttpResponse {
   char body[kMaxAnswerBytes];
 };
 
-// One request at a time. On the chip the request runs in a task of its own, so poll() only looks at a flag.
+// One request at a time. On the chip the request runs in a task of its own, so poll() only looks at a flag. The port writes the answer into the response that
+// begin() was given, and only while the request runs. The caller does not touch that response until poll() has returned true or it has called cancel().
 class HttpPort {
  public:
   virtual ~HttpPort() = default;
-  // Starts a request. Returns false when it cannot start now (busy, no memory, no link).
-  virtual bool begin(const HttpRequest &request) = 0;
-  // Returns true when the request has ended, and then fills the response (failure None with a status, or a failure). Returns false while it runs.
-  virtual bool poll(HttpResponse *response) = 0;
-  // Stops the request that runs. The next begin() may start a new one.
+  // Starts a request and keeps the pointer to the response. Returns false when it cannot start now (busy, no memory, no link).
+  virtual bool begin(const HttpRequest &request, HttpResponse *response) = 0;
+  // Returns true when the request has ended, and then the response is filled (failure None with a status, or a failure). Returns false while it runs.
+  virtual bool poll() = 0;
+  // Gives up the request that runs. The port never writes into the response after this call. The next begin() may be refused while the task of the port
+  // still works on the old request.
   virtual void cancel() = 0;
 };
 

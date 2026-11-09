@@ -271,7 +271,7 @@ bool BackendClient::requestNewEnroll(uint32_t nowMs) {
 }
 
 bool BackendClient::startRequest(uint32_t nowMs, Pending kind, const HttpRequest &request) {
-  if (!http_.begin(request)) {
+  if (!http_.begin(request, &response_)) {
     setDue(nowMs, kIdleCheckMs);
     return false;
   }
@@ -284,7 +284,7 @@ bool BackendClient::startRequest(uint32_t nowMs, Pending kind, const HttpRequest
 void BackendClient::update(uint32_t nowMs, bool linkUp) {
   advanceClock(nowMs);
   if (inFlight_) {
-    if (http_.poll(&response_)) {
+    if (http_.poll()) {
       inFlight_ = false;
       finish(nowMs);
     } else if (nowMs - startedMs_ >= kRequestWatchdogMs) {

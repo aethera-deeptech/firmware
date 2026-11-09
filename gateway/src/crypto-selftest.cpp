@@ -124,6 +124,15 @@ SelfTestResult runCryptoSelfTest() {
     return SelfTestResult::X25519Failed;
   }
 
+  // The known answer of FIPS 180-4 for the text "abc". The backend client hashes its key with this function.
+  static const uint8_t kAbc[3] = {'a', 'b', 'c'};
+  static const uint8_t kAbcDigest[kSha256Size] = {0xba, 0x78, 0x16, 0xbf, 0x8f, 0x01, 0xcf, 0xea, 0x41, 0x41, 0x40, 0xde, 0x5d, 0xae, 0x22, 0x23,
+                                                  0xb0, 0x03, 0x61, 0xa3, 0x96, 0x17, 0x7a, 0x9c, 0xb4, 0x10, 0xff, 0x61, 0xf2, 0x00, 0x15, 0xad};
+  uint8_t digest[kSha256Size];
+  if (!mbedtlsSha256(nullptr, kAbc, sizeof(kAbc), digest) || memcmp(digest, kAbcDigest, sizeof(digest)) != 0) {
+    return SelfTestResult::Sha256Failed;
+  }
+
   uint8_t key[kAesKeySize];
   for (size_t i = 0; i < sizeof(key); i++) {
     key[i] = static_cast<uint8_t>(i);
@@ -169,6 +178,8 @@ const char *selfTestName(SelfTestResult result) {
       return "FAILED tamper accepted";
     case SelfTestResult::X25519Failed:
       return "FAILED x25519";
+    case SelfTestResult::Sha256Failed:
+      return "FAILED sha256";
   }
   return "FAILED unknown";
 }
