@@ -313,17 +313,26 @@ void test_a_command_for_an_unknown_node_or_with_a_bad_id_is_refused_without_a_ch
   char plug[kNodeIdSize];
   pairPlug(rig, 1, plug);
   TEST_ASSERT_EQUAL_INT(result(SubmitResult::UnknownNode), result(submit(rig, 0, "cmd-1", "PLUG-FFFFFF")));
+  // The command can never run here, so the backend gets a result that is not ok and stops listing it.
+  TEST_ASSERT_EQUAL_UINT(1, rig.relay.resultCount());
+  TEST_ASSERT_EQUAL_STRING("cmd-1", rig.relay.results()[0].id);
+  TEST_ASSERT_FALSE(rig.relay.results()[0].ok);
   TEST_ASSERT_EQUAL_INT(result(SubmitResult::BadId), result(submit(rig, 0, "", plug)));
   TEST_ASSERT_EQUAL_INT(result(SubmitResult::BadId), result(submit(rig, 0, "a b", plug)));
   TEST_ASSERT_EQUAL_INT(result(SubmitResult::BadId), result(submit(rig, 0, "abcdefghijabcdefghijabcdefghijabcdefg", plug)));
   TEST_ASSERT_EQUAL_INT(result(SubmitResult::BadId), result(submit(rig, 0, nullptr, plug)));
+  // The same command again, as the backend sends it until the result is reported, does not make a second result.
   TEST_ASSERT_EQUAL_INT(result(SubmitResult::UnknownNode), result(submit(rig, 0, "cmd-1", nullptr)));
+  TEST_ASSERT_EQUAL_UINT(1, rig.relay.resultCount());
+  // A bad id gets no result, because it is not safe to write into the JSON.
   TEST_ASSERT_EQUAL_INT(result(SubmitResult::Queued), result(submit(rig, 0, "abcdefghijabcdefghijabcdefghijabcdef", plug)));
   // A node that was removed keeps its id, but it takes no command.
   uint8_t mac[kMacSize];
   macOfNumber(1, mac);
   TEST_ASSERT_TRUE(rig.registry.unpair(mac));
   TEST_ASSERT_EQUAL_INT(result(SubmitResult::UnknownNode), result(submit(rig, 0, "cmd-2", plug)));
+  TEST_ASSERT_EQUAL_UINT(2, rig.relay.resultCount());
+  TEST_ASSERT_EQUAL_STRING("cmd-2", rig.relay.results()[1].id);
   TEST_ASSERT_EQUAL_UINT(0, rig.sender.count);
   TEST_ASSERT_EQUAL_INT(0, rig.log.writes);
 }

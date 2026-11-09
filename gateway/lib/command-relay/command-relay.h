@@ -20,6 +20,8 @@ constexpr size_t kMaxQueuedCommands = 16;
 // record is free, or when the command is done and its result is no longer waiting for a batch. A new command is refused when no slot can be used.
 constexpr size_t kCommandLogSlots = kMaxNodes + kMaxQueuedCommands;
 constexpr uint32_t kNumberReserveSeconds = 600;
+// How many results wait for a batch at most. Every record of the log can have one, and the answers about unknown nodes have none in the log.
+constexpr size_t kMaxHeldResults = kCommandLogSlots + kMaxBatchResults;
 // The hub sends a command again after this time, with the echo of the newest frame of the plug, until the plug answers or the command ends.
 constexpr uint32_t kCommandResendMs = 5000;
 // The hub sends a command again only while the newest frame of the plug is not older than this, because a plug that is not heard cannot be reached
@@ -60,7 +62,7 @@ enum class SubmitResult : uint8_t {
   Resumed,      // the command was sent before a restart and its answer is not known, so it is sent again with the same number
   Duplicate,    // the command is queued already, and nothing changed
   AlreadyRan,   // the plug answered it before, and the result is queued again for the next batch
-  UnknownNode,  // no paired node has this id
+  UnknownNode,  // no paired node has this id, and a result with ok false is queued for the next batch, so the backend stops listing the command
   BadId,        // the id of the command is empty, longer than 36 characters, or holds a character that is not a letter, a digit or a hyphen
   Expired,      // the command has no life left, so it is not run
   Full,         // the queue, the numbers or the log are used up, so the command is not taken and the backend sends it again
@@ -92,7 +94,8 @@ class CommandRelay {
   // The results for the next batch. The caller passes them to the batch builder and keeps them until the backend acknowledges that batch, then calls
   // dropResults with the number that it passed, so a result that came in meanwhile stays for the next batch. A batch takes kMaxBatchResults at most,
   // so resultCount() is never more than that and the rest waits. The relay holds a result for every record of the log at most, and a record whose result
-  // waits is never reused, so a new result always finds room and the entries that were passed never move.
+  // waits is never reused. The results for commands of an unknown node have no record, and the list has room for kMaxBatchResults of them on top of the
+  // records, so a new result finds room and the entries that were passed never move.
   size_t resultCount() const { return resultCount_ < kMaxBatchResults ? resultCount_ : kMaxBatchResults; }
   const RelayResult *results() const { return results_; }
   void dropResults(size_t count);
@@ -146,7 +149,7 @@ class CommandRelay {
   uint32_t logFailures_;
   Pending pending_[kMaxQueuedCommands];
   CommandRecord records_[kCommandLogSlots];
-  RelayResult results_[kCommandLogSlots];
+  RelayResult results_[kMaxHeldResults];
   size_t resultCount_;
 };
 

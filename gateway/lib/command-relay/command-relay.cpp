@@ -143,6 +143,7 @@ SubmitResult CommandRelay::submit(uint32_t nowMs, uint32_t serverTime, const cha
     return SubmitResult::BadId;
   }
   if (nodeId == nullptr) {
+    pushResult(id, false);
     return SubmitResult::UnknownNode;
   }
   forgetEnded(serverTime);
@@ -165,6 +166,8 @@ SubmitResult CommandRelay::submit(uint32_t nowMs, uint32_t serverTime, const cha
 
   uint8_t mac[kMacSize];
   if (!registry_.macOf(nodeId, mac)) {
+    // The plug is not known here, so the command cannot run. The backend lists it until it gets a result or the life ends, and a failed result closes it.
+    pushResult(id, false);
     return SubmitResult::UnknownNode;
   }
 
@@ -244,8 +247,8 @@ void CommandRelay::pushResult(const char *id, bool ok) {
   }
   // A result is held for a record of the log at most, and the slot of a record whose result waits is not reused, so the list is never full here.
   // The test is a guard that keeps the array safe if that ever stops being true.
-  if (resultCount_ == kCommandLogSlots) {
-    memmove(&results_[0], &results_[1], (kCommandLogSlots - 1) * sizeof(results_[0]));
+  if (resultCount_ == kMaxHeldResults) {
+    memmove(&results_[0], &results_[1], (kMaxHeldResults - 1) * sizeof(results_[0]));
     resultCount_--;
   }
   RelayResult &entry = results_[resultCount_++];
