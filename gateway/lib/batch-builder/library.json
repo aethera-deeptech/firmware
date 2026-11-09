@@ -1,0 +1,7 @@
+{
+  "name": "batch-builder",
+  "version": "0.1.0",
+  "description": "The batch of readings that the hub sends to the backend, chosen from the stored samples, numbered, frozen until the backend acknowledges it, and written as JSON",
+  "frameworks": "*",
+  "platforms": "*"
+}
