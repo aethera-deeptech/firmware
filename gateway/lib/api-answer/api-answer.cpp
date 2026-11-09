@@ -69,6 +69,8 @@ class Scanner {
         break;
       }
       if (c < 0x20) {
+        // The byte that is wrong stays under the cursor, so a cut body is not taken for a body that ends there.
+        cur_--;
         return false;
       }
       if (c == '\\') {
@@ -107,16 +109,18 @@ class Scanner {
             }
             uint32_t code = 0;
             for (int i = 0; i < 4; i++) {
-              const int digit = hexValue(*cur_++);
+              const int digit = hexValue(*cur_);
               if (digit < 0) {
                 return false;
               }
+              cur_++;
               code = code * 16 + static_cast<uint32_t>(digit);
             }
             c = code < 0x100 ? static_cast<unsigned char>(code) : 0xFF;
             break;
           }
           default:
+            cur_--;
             return false;
         }
       }

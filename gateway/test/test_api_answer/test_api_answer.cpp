@@ -516,6 +516,10 @@ void test_a_cut_body_with_wrong_bytes_before_the_cut_is_still_refused_and_the_ke
   TEST_ASSERT_TRUE(parseReadingsAnswer((head + "\"\\u").data(), head.size() + 3, &a, true));
   TEST_ASSERT_TRUE(parseReadingsAnswer((head + "\"\\").data(), head.size() + 2, &a, true));
   TEST_ASSERT_FALSE(parseReadingsAnswer((head + "\"\\u0x").data(), head.size() + 5, &a, true));
+  // The wrong byte is the last byte of the body. It is a wrong byte and not the end of the body.
+  TEST_ASSERT_FALSE(parseReadingsAnswer((head + "\"\\u000x").data(), head.size() + 7, &a, true));
+  TEST_ASSERT_FALSE(parseReadingsAnswer((head + "\"a\n").data(), head.size() + 3, &a, true));
+  TEST_ASSERT_FALSE(parseReadingsAnswer((head + "\"\\q").data(), head.size() + 3, &a, true));
   TEST_ASSERT_FALSE(parseReadingsAnswer((head + "trx").data(), head.size() + 3, &a, true));
 }
 
