@@ -22,6 +22,9 @@ bool WifiClient::begin(uint32_t nowMs) {
 
   WiFi.persistent(false);
   WiFi.mode(WIFI_STA);
+  if (listener_ != nullptr) {
+    listener_->onRadioOn();
+  }
   // The link is watched here, so the stack must not reconnect on its own. The modem sleep is off because the hub is powered from USB and
   // the link to the nodes (ESP-NOW) needs the radio awake to receive.
   WiFi.setAutoReconnect(false);
@@ -60,6 +63,10 @@ void WifiClient::update(uint32_t nowMs) {
 void WifiClient::stop() {
   link_.disable();
   connected_ = false;
+  // ESP-NOW goes first, because the stack is gone once the radio is off.
+  if (listener_ != nullptr) {
+    listener_->onRadioOff();
+  }
   WiFi.disconnect(true);
   WiFi.mode(WIFI_OFF);
 }
