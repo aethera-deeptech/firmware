@@ -4,7 +4,9 @@
 #include <WiFi.h>
 #include <WiFiClientSecure.h>
 
+#include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 namespace wattlink {
 
@@ -12,33 +14,19 @@ namespace {
 
 // The time that each step of the exchange may take. The client of the backend gives a request up after 40 seconds, and these keep the usual case below that.
 constexpr uint32_t kConnectTimeoutMs = 8000;
-constexpr unsigned long kHandshakeTimeoutMs = 10000;
-constexpr uint32_t kReadTimeoutMs = 8000;
+// WiFiClientSecure takes this value in seconds, and so does its socket timeout.
+constexpr unsigned long kHandshakeTimeoutSeconds = 10;
 constexpr uint32_t kSocketTimeoutSeconds = 8;
+constexpr uint32_t kReadTimeoutMs = 8000;
+// The whole body must arrive in this time, because a connection that stalls in the middle of a body would hold the task for ever.
+constexpr uint32_t kBodyDeadlineMs = 8000;
+// The least free block that a TLS connection needs (the buffers of mbedTLS and the objects of HTTPClient).
+constexpr size_t kMinFreeBlockBytes = 48 * 1024;
+constexpr size_t kBearerPrefixLength = 7;  // "Bearer "
+constexpr int kMaxTrailerLines = 16;
 
 constexpr UBaseType_t kTaskPriority = 1;
 constexpr BaseType_t kTaskCore = 0;
-
-// Receives the body of the answer from HTTPClient, which decodes a chunked body before it gives it here. It keeps what fits and counts the rest.
-class BodySink : public Stream {
- public:
-  typedef bool (*Append)(void *context, const uint8_t *data, size_t length);
-  BodySink(Append append, void *context) : append_(append), context_(context) {}
-
-  size_t write(uint8_t byte) override { return write(&byte, 1); }
-  size_t write(const uint8_t *data, size_t length) override {
-    // Returning the full length keeps the transfer going, so the connection is read to its end even when the body is longer than the buffer.
-    append_(context_, data, length);
-    return length;
-  }
-  int available() override { return 0; }
-  int read() override { return -1; }
-  int peek() override { return -1; }
-
- private:
-  Append append_;
-  void *context_;
-};
 
 uint32_t parseSeconds(const String &text) {
   uint32_t value = 0;
@@ -121,14 +109,24 @@ bool EspHttpPort::poll() {
 }
 
 void EspHttpPort::cancel() {
+  if (lock_ == nullptr) {
+    return;
+  }
   xSemaphoreTake(lock_, portMAX_DELAY);
-  uint8_t expected = Working;
-  if (!state_.compare_exchange_strong(expected, Abandoned)) {
-    // A request that the task has not taken yet, or one that has ended, is dropped at once.
-    expected = Requested;
-    if (!state_.compare_exchange_strong(expected, Idle)) {
-      expected = Finished;
-      state_.compare_exchange_strong(expected, Idle);
+  // The task takes a request without the lock, so the state may change between the look and the exchange. The loop looks again then, until the exchange
+  // works, and it ends with the request given up or dropped.
+  while (true) {
+    uint8_t seen = state_.load();
+    uint8_t next;
+    if (seen == Working) {
+      next = Abandoned;
+    } else if (seen == Requested || seen == Finished) {
+      next = Idle;  // a request that the task has not taken yet, or one that has ended, is dropped at once
+    } else {
+      break;
+    }
+    if (state_.compare_exchange_strong(seen, next)) {
+      break;
     }
   }
   xSemaphoreGive(lock_);
@@ -186,6 +184,123 @@ bool EspHttpPort::appendBody(const uint8_t *data, size_t length) {
   return wanted;
 }
 
+int EspHttpPort::readSome(WiFiClient &stream, uint8_t *out, size_t max, uint32_t startMs, HttpFailure *why) {
+  while (true) {
+    if (state_.load() != Working) {
+      *why = HttpFailure::Other;
+      return -1;
+    }
+    const int available = stream.available();
+    if (available > 0) {
+      const size_t want = max < static_cast<size_t>(available) ? max : static_cast<size_t>(available);
+      const int count = stream.read(out, want);
+      if (count > 0) {
+        return count;
+      }
+    } else if (!stream.connected()) {
+      return 0;
+    }
+    if (millis() - startMs > kBodyDeadlineMs) {
+      *why = HttpFailure::Timeout;
+      return -1;
+    }
+    delay(2);
+  }
+}
+
+int EspHttpPort::readLine(WiFiClient &stream, char *line, size_t capacity, uint32_t startMs, HttpFailure *why) {
+  size_t length = 0;
+  while (true) {
+    uint8_t c = 0;
+    const int count = readSome(stream, &c, 1, startMs, why);
+    if (count < 0) {
+      return -1;
+    }
+    if (count == 0) {
+      *why = HttpFailure::Connect;
+      return -1;
+    }
+    if (c == '\n') {
+      line[length] = '\0';
+      return static_cast<int>(length);
+    }
+    if (c != '\r' && length + 1 < capacity) {
+      line[length++] = static_cast<char>(c);
+    }
+  }
+}
+
+HttpFailure EspHttpPort::readBody(WiFiClient &stream, int32_t contentLength, bool chunked) {
+  const uint32_t startMs = millis();
+  uint8_t buffer[256];
+  HttpFailure why = HttpFailure::Other;
+
+  if (!chunked) {
+    int32_t remaining = contentLength;
+    while (contentLength < 0 || remaining > 0) {
+      const size_t want = (contentLength < 0 || remaining > static_cast<int32_t>(sizeof(buffer))) ? sizeof(buffer) : static_cast<size_t>(remaining);
+      const int count = readSome(stream, buffer, want, startMs, &why);
+      if (count < 0) {
+        return why;
+      }
+      if (count == 0) {
+        // The end of a body without a length is the end of the connection. A body with a length that ends early is cut short.
+        return contentLength < 0 ? HttpFailure::None : HttpFailure::Connect;
+      }
+      if (!appendBody(buffer, static_cast<size_t>(count))) {
+        return HttpFailure::Other;
+      }
+      if (contentLength >= 0) {
+        remaining -= count;
+      }
+    }
+    return HttpFailure::None;
+  }
+
+  while (true) {
+    char line[24];
+    if (readLine(stream, line, sizeof(line), startMs, &why) < 0) {
+      return why;
+    }
+    char *end = nullptr;
+    unsigned long size = strtoul(line, &end, 16);
+    if (end == line) {
+      return HttpFailure::Other;
+    }
+    if (size == 0) {
+      // The trailer section ends with an empty line.
+      for (int i = 0; i < kMaxTrailerLines; i++) {
+        const int length = readLine(stream, line, sizeof(line), startMs, &why);
+        if (length < 0) {
+          return why;
+        }
+        if (length == 0) {
+          return HttpFailure::None;
+        }
+      }
+      return HttpFailure::Other;
+    }
+    while (size > 0) {
+      const size_t want = size > sizeof(buffer) ? sizeof(buffer) : static_cast<size_t>(size);
+      const int count = readSome(stream, buffer, want, startMs, &why);
+      if (count < 0) {
+        return why;
+      }
+      if (count == 0) {
+        return HttpFailure::Connect;
+      }
+      if (!appendBody(buffer, static_cast<size_t>(count))) {
+        return HttpFailure::Other;
+      }
+      size -= static_cast<unsigned long>(count);
+    }
+    // The line end after the data of the chunk.
+    if (readLine(stream, line, sizeof(line), startMs, &why) < 0) {
+      return why;
+    }
+  }
+}
+
 void EspHttpPort::execute() {
   if (WiFi.status() != WL_CONNECTED) {
     deliver(HttpFailure::NoLink, 0, 0);
@@ -196,10 +311,19 @@ void EspHttpPort::execute() {
     deliver(HttpFailure::Tls, 0, 0);
     return;
   }
+  if (time(nullptr) < static_cast<time_t>(kMinUnixSeconds)) {
+    // mbedTLS compares the dates of the certificates with the system time, so the handshake would fail whatever the server sends.
+    deliver(HttpFailure::Clock, 0, 0);
+    return;
+  }
+  if (ESP.getMaxAllocHeap() < kMinFreeBlockBytes) {
+    deliver(HttpFailure::Memory, 0, 0);
+    return;
+  }
 
   WiFiClientSecure client;
   client.setCACertBundle(caBundle_);
-  client.setHandshakeTimeout(kHandshakeTimeoutMs);
+  client.setHandshakeTimeout(kHandshakeTimeoutSeconds);
   client.setTimeout(kSocketTimeoutSeconds);
 
   HTTPClient http;
@@ -210,10 +334,17 @@ void EspHttpPort::execute() {
     deliver(HttpFailure::Other, 0, 0);
     return;
   }
-  static const char *kHeaders[] = {"Retry-After"};
-  http.collectHeaders(kHeaders, 1);
+  static const char *kHeaders[] = {"Retry-After", "Transfer-Encoding"};
+  http.collectHeaders(kHeaders, 2);
   if (hasBearer_) {
-    http.addHeader("Authorization", String("Bearer ") + bearer_);
+    String authorization = String("Bearer ") + bearer_;
+    // A String that could not grow is shorter than it should be, and a request with a cut key would only earn an answer 401.
+    if (authorization.length() != kBearerPrefixLength + strlen(bearer_)) {
+      http.end();
+      deliver(HttpFailure::Memory, 0, 0);
+      return;
+    }
+    http.addHeader("Authorization", authorization);
   }
 
   int status;
@@ -226,9 +357,10 @@ void EspHttpPort::execute() {
 
   if (status < 0) {
     char detail[64];
-    const bool tls = client.lastError(detail, sizeof(detail)) != 0;
+    // The plain value -1 is a failure of the TCP connection or a timeout of the handshake, and a code below it is an error of mbedTLS.
+    const int tlsError = client.lastError(detail, sizeof(detail));
     HttpFailure failure = HttpFailure::Other;
-    if (tls) {
+    if (tlsError < -1) {
       failure = HttpFailure::Tls;
     } else if (status == HTTPC_ERROR_READ_TIMEOUT) {
       failure = HttpFailure::Timeout;
@@ -241,10 +373,18 @@ void EspHttpPort::execute() {
   }
 
   const uint32_t retryAfter = parseSeconds(http.header("Retry-After"));
-  BodySink sink(
-      [](void *context, const uint8_t *data, size_t length) { return static_cast<EspHttpPort *>(context)->appendBody(data, length); }, this);
-  http.writeToStream(&sink);
+  const bool chunked = http.header("Transfer-Encoding").indexOf("chunked") >= 0;
+  const int32_t contentLength = http.getSize();
+  HttpFailure bodyFailure = HttpFailure::None;
+  // An answer 204 or 304 has no body, and neither has an informational answer.
+  if (status != 204 && status != 304 && status >= 200) {
+    bodyFailure = readBody(client, contentLength, chunked);
+  }
   http.end();
+  if (bodyFailure != HttpFailure::None) {
+    deliver(bodyFailure, 0, 0);
+    return;
+  }
   deliver(HttpFailure::None, status, retryAfter);
 }
 

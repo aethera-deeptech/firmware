@@ -1,6 +1,7 @@
 #pragma once
 
 #include <Arduino.h>
+#include <WiFiClient.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/semphr.h>
 #include <freertos/task.h>
@@ -16,7 +17,8 @@ namespace wattlink {
 // and the loop runs on core 1.
 //
 // The certificate of the server is always checked against the bundle of root certificates that the caller gives. A port without a bundle fails every request
-// with HttpFailure::Tls and never connects, and nothing here switches the check off.
+// with HttpFailure::Tls and never connects, and nothing here switches the check off. The check needs the system time of the chip (time()), because mbedTLS
+// compares it with the dates of the certificates, so the caller sets it from a time server first. A request fails with HttpFailure::Clock until it is set.
 //
 // The object holds the stack of its task (16 KB), so it must be a static object. Nothing in it prints a key, an address or a body.
 class EspHttpPort : public HttpPort {
@@ -33,6 +35,7 @@ class EspHttpPort : public HttpPort {
   bool begin(const HttpRequest &request, HttpResponse *response) override;
   bool poll() override;
   void cancel() override;
+  bool idle() override { return state_.load() == Idle; }
 
  private:
   enum State : uint8_t {
@@ -52,6 +55,12 @@ class EspHttpPort : public HttpPort {
   // Writes into the response of the caller, only while the request is still wanted. Returns false when it was given up.
   bool deliver(HttpFailure failure, int status, uint32_t retryAfterSeconds);
   bool appendBody(const uint8_t *data, size_t length);
+  // Reads the body of the answer from the connection with a deadline of its own, and decodes a chunked body. HTTPClient has no deadline for the body.
+  HttpFailure readBody(WiFiClient &stream, int32_t contentLength, bool chunked);
+  // Returns the bytes read (at least 1), 0 when the connection closed with nothing left, or -1 with the reason in *why.
+  int readSome(WiFiClient &stream, uint8_t *out, size_t max, uint32_t startMs, HttpFailure *why);
+  // Reads one line without its line end. Returns the length, or -1 with the reason in *why.
+  int readLine(WiFiClient &stream, char *line, size_t capacity, uint32_t startMs, HttpFailure *why);
 
   const char *host_;
   uint16_t port_;

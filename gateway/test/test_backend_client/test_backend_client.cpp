@@ -99,6 +99,17 @@ class FakeHttp : public HttpPort {
     cancels++;
     running = false;
     hang = false;
+    if (busyAfterCancel > 0) {
+      busyUntilIdleCalls = busyAfterCancel;
+    }
+  }
+
+  bool idle() override {
+    if (busyUntilIdleCalls > 0) {
+      busyUntilIdleCalls--;
+      return false;
+    }
+    return !running;
   }
 
   struct Reply {
@@ -126,6 +137,8 @@ class FakeHttp : public HttpPort {
   std::deque<Reply> replies;
   std::deque<Seen> requests;
   HttpResponse *out_ = nullptr;
+  int busyAfterCancel = 0;
+  int busyUntilIdleCalls = 0;
   bool refuse = false;
   bool hang = false;
   bool running = false;
@@ -482,8 +495,9 @@ void test_a_poll_answer_of_404_sends_one_batch_to_test_the_key_and_a_401_then_as
   TEST_ASSERT_EQUAL_STRING("DDDDDDDD", rig.client.claimCode());
   TEST_ASSERT_EQUAL_STRING("/device/v1/readings", rig.http.requests[2].path.c_str());
   TEST_ASSERT_EQUAL_STRING("/device/v1/enroll", rig.http.requests[3].path.c_str());
-  // One answer 401 was enough, because the code was never claimed.
+  // One answer 401 was enough, because the code was never claimed, and the key is not the one that the backend knows, so a new key is made.
   TEST_ASSERT_FALSE(rig.store.enrolledFlag);
+  TEST_ASSERT_EQUAL_INT(1, rig.store.renews);
 }
 
 void test_a_poll_answer_of_404_and_a_good_batch_prove_the_key_and_set_the_flag() {
@@ -1007,6 +1021,25 @@ void test_a_request_that_does_not_end_is_cancelled_after_40_seconds_and_counts_a
   TEST_ASSERT_EQUAL_UINT32(1, rig.client.batchesStored());
 }
 
+void test_nothing_is_written_into_the_body_buffer_while_the_port_still_works_on_a_given_up_request() {
+  Rig rig;
+  makeReady(rig);
+  rig.builder.onExpectedSeq(1);
+  rig.http.hang = true;
+  rig.http.busyAfterCancel = 30;
+  rig.client.update(1000, true);
+  rig.run(1100, 41200);
+  TEST_ASSERT_EQUAL_INT(1, rig.http.cancels);
+  // The port reports that it is busy for the next calls, and the client neither renders a batch nor asks for a new request.
+  const int begins = rig.http.beginCalls;
+  rig.run(41300, 60000);
+  TEST_ASSERT_EQUAL_INT(begins, rig.http.beginCalls);
+  TEST_ASSERT_EQUAL_UINT32(0, rig.client.batchesStored());
+  rig.http.reply(200, ack(1));
+  rig.run(60100, 150000);
+  TEST_ASSERT_EQUAL_UINT32(1, rig.client.batchesStored());
+}
+
 void test_a_request_in_flight_is_read_when_it_ends_even_when_the_link_is_down() {
   Rig rig;
   makeReady(rig);
@@ -1403,6 +1436,7 @@ int main() {
   RUN_TEST(test_from_the_fifth_answer_409_in_a_row_the_pause_grows_like_after_a_failure);
   RUN_TEST(test_an_answer_409_without_a_number_is_a_bad_answer);
   RUN_TEST(test_a_request_that_does_not_end_is_cancelled_after_40_seconds_and_counts_as_a_failure);
+  RUN_TEST(test_nothing_is_written_into_the_body_buffer_while_the_port_still_works_on_a_given_up_request);
   RUN_TEST(test_a_request_in_flight_is_read_when_it_ends_even_when_the_link_is_down);
   RUN_TEST(test_a_request_that_cannot_start_is_tried_again_and_the_batch_is_not_marked_as_sent);
   RUN_TEST(test_a_missing_key_is_reported_when_a_batch_is_due);

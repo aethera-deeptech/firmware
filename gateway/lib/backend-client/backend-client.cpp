@@ -310,6 +310,11 @@ void BackendClient::update(uint32_t nowMs, bool linkUp) {
   if (!due(nowMs)) {
     return;
   }
+  if (!http_.idle()) {
+    // A request that was given up may still run in the port, and it may still read the body buffer, so nothing is written into it yet.
+    setDue(nowMs, kIdleCheckMs);
+    return;
+  }
   if (state_ == ClientState::ShowCode && static_cast<int32_t>(nowMs - codeExpiresMs_) >= 0) {
     if (expiring_) {
       // The last poll could not start, so the code is over.
@@ -626,6 +631,9 @@ void BackendClient::onReadingsAnswer(uint32_t nowMs) {
   if (status == 401) {
     consecutive401_++;
     if (probing_) {
+      // The backend does not know this key, and the answer is the same for a key that an owner revoked. A new enrollment with the old key would let the owner
+      // bring it back, so the hub makes a new key first. A flash that refuses it leaves the old key.
+      store_.renewKey();
       goNeedEnroll(nowMs);
       return;
     }

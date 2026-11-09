@@ -59,14 +59,16 @@ enum class HttpFailure : uint8_t {
   Connect,  // no connection to the host
   Tls,      // the handshake or the certificate failed
   Timeout,  // no answer in time, or the request was cancelled
+  Clock,    // the system time is not set, so the certificate cannot be checked
+  Memory,   // too little memory for the connection
   Other,
 };
 
 struct HttpRequest {
   HttpMethod method;
   const char *path;    // starts with a slash, and is valid until begin() returns
-  const char *bearer;  // the key text for the header Authorization, or null. The port copies it and wipes its copy when the request ends, because it is valid until begin() returns
-  const char *body;    // null for a GET. It stays valid until poll() has returned true
+  const char *bearer;  // the key text for the header Authorization, or null. The port copies it and wipes its own buffer when the request ends (the copy that HTTPClient makes for its header is freed and not wiped), because it is valid until begin() returns
+  const char *body;    // null for a GET. It stays valid until poll() has returned true, or after a cancel() until idle() says that the port is free
   size_t bodyLength;
 };
 
@@ -89,8 +91,10 @@ class HttpPort {
   // Returns true when the request has ended, and then the response is filled (failure None with a status, or a failure). Returns false while it runs.
   virtual bool poll() = 0;
   // Gives up the request that runs. The port never writes into the response after this call. The next begin() may be refused while the task of the port
-  // still works on the old request.
+  // still works on the old request, and it may still read the body until then.
   virtual void cancel() = 0;
+  // True when no request runs and none waits for poll(). The client writes into its body buffer only then.
+  virtual bool idle() = 0;
 };
 
 // The key of the hub and the flag that says that the owner claimed the hub. They live in flash.
