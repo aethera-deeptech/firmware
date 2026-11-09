@@ -236,6 +236,29 @@ void test_a_name_that_is_too_long_is_not_shown_again() {
   assertContains(html, "required value=\"\">");
 }
 
+void test_the_page_says_that_only_2_4_ghz_wifi_works() {
+  char html[kPageBuffer];
+  const PageModel model = {Notice::None, nullptr, false};
+  TEST_ASSERT_TRUE(render(model, html) > 0);
+  assertContains(html, "<p>Hub hanya bisa memakai Wi-Fi 2,4 GHz. Wi-Fi 5 GHz tidak didukung.</p>");
+  // The hint comes right after the intro and before the form.
+  TEST_ASSERT_TRUE(strstr(html, "Wi-Fi 5 GHz tidak didukung") < strstr(html, "<form"));
+}
+
+void test_a_buffer_that_ends_inside_the_hint_gives_an_empty_page() {
+  char big[kPageBuffer];
+  const PageModel model = {Notice::None, nullptr, false};
+  TEST_ASSERT_TRUE(render(model, big) > 0);
+  const char *hint = strstr(big, "Wi-Fi 5 GHz");
+  TEST_ASSERT_NOT_NULL(hint);
+  // The buffer holds the text up to the middle of the hint, so the page is cut inside it and the writer gives up.
+  const size_t cut = static_cast<size_t>(hint - big) + 4;
+  char small[kPageBuffer];
+  memset(small, 'x', sizeof(small));
+  TEST_ASSERT_EQUAL_UINT(0, renderSetupPage(model, small, cut));
+  TEST_ASSERT_EQUAL_STRING("", small);
+}
+
 void test_the_longest_page_fits_the_buffer_of_the_chip() {
   char html[kPageBuffer];
   const PageModel model = {Notice::ConfirmOpen, "\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"", true};
@@ -302,6 +325,8 @@ int main(int, char **) {
   RUN_TEST(test_a_name_of_exactly_32_bytes_and_a_utf8_name_are_shown);
   RUN_TEST(test_the_password_field_never_has_a_value);
   RUN_TEST(test_a_name_that_is_too_long_is_not_shown_again);
+  RUN_TEST(test_the_page_says_that_only_2_4_ghz_wifi_works);
+  RUN_TEST(test_a_buffer_that_ends_inside_the_hint_gives_an_empty_page);
   RUN_TEST(test_the_longest_page_fits_the_buffer_of_the_chip);
   RUN_TEST(test_a_small_buffer_gives_an_empty_page_and_never_overflows);
   RUN_TEST(test_the_saved_page_has_no_form);

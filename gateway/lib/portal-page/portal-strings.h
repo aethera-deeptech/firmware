@@ -6,6 +6,7 @@ namespace page {
 // All the texts of the setup page are in this file, so the language can be switched here and nowhere else.
 constexpr const char *kTitle = "Pengaturan WATTLINK Hub";
 constexpr const char *kIntro = "Ketik nama dan kata sandi Wi-Fi toko Anda agar Hub bisa terhubung ke internet.";
+constexpr const char *kBandHint = "Hub hanya bisa memakai Wi-Fi 2,4 GHz. Wi-Fi 5 GHz tidak didukung.";
 constexpr const char *kSsidLabel = "Nama Wi-Fi (SSID)";
 constexpr const char *kPasswordLabel = "Kata sandi Wi-Fi";
 constexpr const char *kPasswordHint = "Kosongkan hanya jika Wi-Fi toko tidak memakai kata sandi.";

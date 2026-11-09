@@ -187,6 +187,8 @@ size_t renderSetupPage(const PageModel &model, char *out, size_t size) {
   w.addEscaped(page::kTitle);
   w.add("</h1><p>");
   w.addEscaped(page::kIntro);
+  w.add("</p><p>");
+  w.addEscaped(page::kBandHint);
   w.add("</p>");
 
   const char *notice = noticeText(model.notice);

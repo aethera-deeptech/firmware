@@ -30,7 +30,7 @@ The Hub is the only device with firmware so far, in `gateway/`, and the code tha
 
 ## Configuration
 
-The Hub has no setting that its owner can change yet. The pins and the version are constants in `gateway/src/config.h`. The Hub gets the Wi-Fi settings of the building through a captive portal that is not built yet, so no password is stored in the repository.
+The pins and the version are constants in `gateway/src/config.h`. The only setting that the owner can change is the Wi-Fi of the building, which the Hub gets through a captive portal. The owner holds the button of the Hub for 3 seconds, joins the setup network that the display names, uses the code that it shows without the hyphens as the password, and fills in a page. The Hub joins only Wi-Fi networks on 2.4 GHz, because the ESP32 has no 5 GHz radio, and the setup page says so. No password is stored in the repository.
 
 ## Documentation
 
@@ -38,6 +38,7 @@ The Hub has no setting that its owner can change yet. The pins and the version a
 - [docs/espnow-protocol.md](docs/espnow-protocol.md) describes the frames between the nodes and the hub.
 - [CONTRIBUTING.md](CONTRIBUTING.md) explains how to make a change.
 - [docs/ci-cd.md](docs/ci-cd.md) lists every workflow and every required check.
+- [docs/hub-flashing.md](docs/hub-flashing.md) says how to put a CI build on a hub board without installing PlatformIO.
 - [SECURITY.md](SECURITY.md) says how to report a vulnerability.
 
 ## Project layout

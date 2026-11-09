@@ -102,7 +102,7 @@ jobs:
       - name: Validate renovate.json
         env:
           # renovate: datasource=npm depName=renovate
-          version: 44.174.0
+          version: 44.199.2
         run: npx --yes --package "renovate@${version}" renovate-config-validator --strict
 
   shellcheck:
