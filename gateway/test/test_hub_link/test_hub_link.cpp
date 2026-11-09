@@ -43,8 +43,9 @@ class FakeRadio : public RadioPort {
 // Remembers what it was given. It answers with the sampleSeq of the last sample of the frame, or with a fixed value when one is set.
 class FakeSink : public SampleSink {
  public:
-  uint32_t onSamples(const uint8_t mac[kMacSize], uint32_t nodeBootId, const Sample *samples, size_t count) override {
+  uint32_t onSamples(uint32_t nowMs, const uint8_t mac[kMacSize], uint32_t nodeBootId, const Sample *samples, size_t count) override {
     calls++;
+    lastNowMs = nowMs;
     memcpy(lastMac, mac, kMacSize);
     lastBootId = nodeBootId;
     lastCount = count;
@@ -53,6 +54,7 @@ class FakeSink : public SampleSink {
   }
 
   int calls = 0;
+  uint32_t lastNowMs = 0;
   uint8_t lastMac[kMacSize] = {0};
   uint32_t lastBootId = 0;
   size_t lastCount = 0;
@@ -480,6 +482,7 @@ void test_a_fresh_frame_of_a_paired_node_is_stored_and_acknowledged() {
   TEST_ASSERT_EQUAL_UINT(1, event.samples);
   TEST_ASSERT_TRUE(event.replied);
   TEST_ASSERT_EQUAL_INT(2, rig.sink.calls);
+  TEST_ASSERT_EQUAL_UINT32(10000, rig.sink.lastNowMs);
   TEST_ASSERT_EQUAL_UINT32(9, rig.sink.firstSeq);
   TEST_ASSERT_EQUAL_UINT(before + 1, rig.radio.count);
   Header header;

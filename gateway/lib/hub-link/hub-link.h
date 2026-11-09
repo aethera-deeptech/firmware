@@ -7,6 +7,7 @@
 #include "hub-pairing.h"
 #include "node-registry.h"
 #include "payloads.h"
+#include "sample-sink.h"
 #include "secure-frame.h"
 
 namespace wattlink {
@@ -20,24 +21,12 @@ namespace wattlink {
 constexpr uint32_t kHelloWindowMs = 1000;
 constexpr uint8_t kHelloPerWindow = 5;
 
-// The highest sampleSeq in an ACK that tells the node that the hub holds no sample of it. It is above any sample, so a node ignores it as progress.
-constexpr uint32_t kNoSampleSeq = kNoU32;
-
 // The way out to the radio. The implementation adds a temporary peer for the send and removes it at once, because the link layer holds few peers.
 class RadioPort {
  public:
   virtual ~RadioPort() = default;
   // Sends one frame to one node. Returns false when the radio refused it.
   virtual bool send(const uint8_t mac[kMacSize], const uint8_t *frame, size_t length) = 0;
-};
-
-// The place that takes the samples. The batches for the backend are built from what it keeps.
-class SampleSink {
- public:
-  virtual ~SampleSink() = default;
-  // Called for a TELEMETRY frame that is fresh and that verified. The samples are valid for the call only. Returns the highest sampleSeq that the
-  // hub now holds for this node and this boot of the node, and the hub puts it in the ACK. A repeat that the sink drops still counts as held.
-  virtual uint32_t onSamples(const uint8_t mac[kMacSize], uint32_t nodeBootId, const Sample *samples, size_t count) = 0;
 };
 
 enum class LinkEventKind : uint8_t {
@@ -82,8 +71,8 @@ class HubLink {
   void onPairRequest(uint32_t nowMs, const uint8_t mac[kMacSize], const uint8_t *frame, size_t length, LinkEvent *event);
   void onTelemetry(uint32_t nowMs, const uint8_t mac[kMacSize], const uint8_t *frame, size_t length, LinkEvent *event);
   // The part that both paths share, once the payload of a verified frame is decoded and the frame is accepted by the registry.
-  void deliver(const uint8_t mac[kMacSize], const Header &header, uint32_t hubBootId, const Sample *samples, size_t count, bool justPaired,
-               LinkEvent *event);
+  void deliver(uint32_t nowMs, const uint8_t mac[kMacSize], const Header &header, uint32_t hubBootId, const Sample *samples, size_t count,
+               bool justPaired, LinkEvent *event);
   void fillNodeId(const uint8_t mac[kMacSize], LinkEvent *event) const;
   bool helloAllowed(uint32_t nowMs);
   bool sendPlain(const uint8_t mac[kMacSize], FrameType type, const uint8_t *payload, size_t length);

@@ -126,7 +126,7 @@ void HubLink::onTelemetry(uint32_t nowMs, const uint8_t mac[kMacSize], const uin
         fillNodeId(mac, event);
         return;
       }
-      deliver(mac, first.header, boundBoot, samples, count, true, event);
+      deliver(nowMs, mac, first.header, boundBoot, samples, count, true, event);
       return;
     }
     case FirstFrameResult::PairedNoFrame:
@@ -174,10 +174,10 @@ void HubLink::onTelemetry(uint32_t nowMs, const uint8_t mac[kMacSize], const uin
   if (stored != FrameCheck::Accepted) {
     return;
   }
-  deliver(mac, opened, boundBoot, samples, count, false, event);
+  deliver(nowMs, mac, opened, boundBoot, samples, count, false, event);
 }
 
-void HubLink::deliver(const uint8_t mac[kMacSize], const Header &header, uint32_t hubBootId, const Sample *samples, size_t count,
+void HubLink::deliver(uint32_t nowMs, const uint8_t mac[kMacSize], const Header &header, uint32_t hubBootId, const Sample *samples, size_t count,
                       bool justPaired, LinkEvent *event) {
   if (hubBootId != hubBootId_) {
     // The node names an old boot of the hub, or none. It gets an ACK that carries the boot number of the hub in its header, so it learns the
@@ -186,7 +186,7 @@ void HubLink::deliver(const uint8_t mac[kMacSize], const Header &header, uint32_
     event->replied = sendAck(mac, header.bootId, kNoSampleSeq);
     return;
   }
-  const uint32_t highest = sink_.onSamples(mac, header.bootId, samples, count);
+  const uint32_t highest = sink_.onSamples(nowMs, mac, header.bootId, samples, count);
   event->kind = justPaired ? LinkEventKind::PairedNode : LinkEventKind::Telemetry;
   event->samples = count;
   if (justPaired) {
