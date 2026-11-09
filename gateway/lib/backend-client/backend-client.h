@@ -172,7 +172,8 @@ class BackendClient {
   // Throws the key away, makes a new one, and asks for a new claim code. For a deliberate action of the owner on the hub, and the only way out of Refused.
   // The samples that wait, the batch that was sent and not acknowledged, the results of relay commands and the commands that wait all stay, because the backend
   // may know the hub already. So the gesture is meant for the same owner. A hub that goes to another business needs the stores cleared first (not built).
-  // Returns false when a request runs, when the client is stopped or when the flash refuses the new key.
+  // The flag is cleared before the key is replaced. Returns false, and changes nothing, when a request runs, when the client is stopped or when the flag cannot be
+  // cleared. Returns false too when the flash refused the new key, and then the client still asks for a code, with its old key.
   bool requestNewEnroll(uint32_t nowMs);
 
   ClientState state() const { return state_; }

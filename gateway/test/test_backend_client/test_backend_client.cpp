@@ -204,6 +204,36 @@ class FakeLog : public CommandLog {
   bool present[kCommandLogSlots] = {};
 };
 
+class MapStore : public KeyValueStore {
+ public:
+  bool get(const char *key, char *out, size_t size) override {
+    const auto found = data.find(key);
+    if (size > 0) {
+      out[0] = '\0';
+    }
+    if (found == data.end() || found->second.size() + 1 > size) {
+      return false;
+    }
+    memcpy(out, found->second.c_str(), found->second.size() + 1);
+    return true;
+  }
+  bool put(const char *key, const char *value) override {
+    data[key] = value;
+    return true;
+  }
+  bool remove(const char *key) override {
+    data.erase(key);
+    return true;
+  }
+  std::map<std::string, std::string> data;
+};
+
+uint32_t countingRandom(void *context) {
+  uint32_t *counter = static_cast<uint32_t *>(context);
+  *counter += 0x9E3779B9u;
+  return *counter;
+}
+
 struct Rig {
   Rig() : registry(flash), builder(samples, registry, kClientBodyBytes), relay(sender, registry, log, kBoot), client(http, store, builder, relay, config()) {
     registry.load();
@@ -838,12 +868,45 @@ void test_the_gesture_is_refused_while_a_request_runs_when_stopped_or_when_the_f
   TEST_ASSERT_TRUE(rig.client.busy());
   TEST_ASSERT_FALSE(rig.client.requestNewEnroll(1100));
   TEST_ASSERT_EQUAL_INT(0, rig.store.renews);
+  // A flag that cannot be cleared stops the gesture before anything changes, and the key is not touched.
   Rig other;
   makeReady(other);
-  other.store.failRenew = true;
+  other.store.failSetEnrolled = true;
   TEST_ASSERT_FALSE(other.client.requestNewEnroll(1100));
   TEST_ASSERT_TRUE(other.store.enrolledFlag);
+  TEST_ASSERT_EQUAL_INT(0, other.store.renews);
   TEST_ASSERT_EQUAL_INT(static_cast<int>(ClientState::Running), static_cast<int>(other.client.state()));
+}
+
+void test_a_key_that_the_flash_refuses_still_ends_in_a_new_enrollment_with_the_old_key() {
+  Rig rig;
+  makeReady(rig);
+  rig.store.failRenew = true;
+  rig.http.reply(201, enrollAnswer("HHHHHHHH"));
+  TEST_ASSERT_FALSE(rig.client.requestNewEnroll(1100));
+  // The flag is cleared in flash and in RAM, so a restart now would ask for a code too.
+  TEST_ASSERT_FALSE(rig.store.enrolledFlag);
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(ClientState::NeedEnroll), static_cast<int>(rig.client.state()));
+  rig.run(1200, 1600);
+  TEST_ASSERT_EQUAL_STRING("HHHHHHHH", rig.client.claimCode());
+  TEST_ASSERT_EQUAL_STRING("/device/v1/enroll", rig.http.requests[0].path.c_str());
+}
+
+void test_a_restart_after_the_flag_was_cleared_and_before_the_key_changed_asks_for_a_code() {
+  Rig rig;
+  MapStore flash;
+  SettingsStore settings(flash);
+  uint32_t counter = 1;
+  FlashClientStore store(settings, countingRandom, &counter);
+  bool created = false;
+  char key[kApiKeySize];
+  TEST_ASSERT_TRUE(settings.ensureApiKey(countingRandom, &counter, key, &created));
+  TEST_ASSERT_TRUE(settings.saveEnrolled(true));
+  // The power fails after the flag is cleared and before the key is replaced, so the flash holds the old key and no flag.
+  TEST_ASSERT_TRUE(settings.saveEnrolled(false));
+  BackendClient client(rig.http, store, rig.builder, rig.relay, Rig::config());
+  TEST_ASSERT_TRUE(client.begin(0));
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(ClientState::NeedEnroll), static_cast<int>(client.state()));
 }
 
 void test_a_batch_that_the_service_refuses_three_times_with_422_is_dropped() {
@@ -1268,36 +1331,6 @@ void test_a_key_is_not_in_the_enroll_body_or_the_poll_path() {
   }
 }
 
-class MapStore : public KeyValueStore {
- public:
-  bool get(const char *key, char *out, size_t size) override {
-    const auto found = data.find(key);
-    if (size > 0) {
-      out[0] = '\0';
-    }
-    if (found == data.end() || found->second.size() + 1 > size) {
-      return false;
-    }
-    memcpy(out, found->second.c_str(), found->second.size() + 1);
-    return true;
-  }
-  bool put(const char *key, const char *value) override {
-    data[key] = value;
-    return true;
-  }
-  bool remove(const char *key) override {
-    data.erase(key);
-    return true;
-  }
-  std::map<std::string, std::string> data;
-};
-
-uint32_t countingRandom(void *context) {
-  uint32_t *counter = static_cast<uint32_t *>(context);
-  *counter += 0x9E3779B9u;
-  return *counter;
-}
-
 void test_the_flash_store_keeps_the_key_and_the_flag_and_a_new_enrollment_changes_both() {
   Rig rig;
   MapStore flash;
@@ -1319,6 +1352,7 @@ void test_the_flash_store_keeps_the_key_and_the_flag_and_a_new_enrollment_change
   BackendClient again(rig.http, store, rig.builder, rig.relay, Rig::config());
   TEST_ASSERT_TRUE(again.begin(7000));
   TEST_ASSERT_EQUAL_INT(static_cast<int>(ClientState::Running), static_cast<int>(again.state()));
+  TEST_ASSERT_EQUAL_STRING(firstKey.c_str(), flash.data["api_key"].c_str());
   TEST_ASSERT_TRUE(again.requestNewEnroll(7100));
   TEST_ASSERT_TRUE(flash.data["api_key"] != firstKey);
   TEST_ASSERT_TRUE(flash.data.find("enrolled") == flash.data.end());
@@ -1385,6 +1419,8 @@ int main() {
   RUN_TEST(test_a_flag_that_could_not_be_written_is_written_again_by_the_next_good_answer);
   RUN_TEST(test_the_gesture_works_while_a_code_is_shown_and_asks_for_another_code);
   RUN_TEST(test_a_key_is_not_in_the_enroll_body_or_the_poll_path);
+  RUN_TEST(test_a_key_that_the_flash_refuses_still_ends_in_a_new_enrollment_with_the_old_key);
+  RUN_TEST(test_a_restart_after_the_flag_was_cleared_and_before_the_key_changed_asks_for_a_code);
   RUN_TEST(test_the_flash_store_keeps_the_key_and_the_flag_and_a_new_enrollment_changes_both);
   return UNITY_END();
 }

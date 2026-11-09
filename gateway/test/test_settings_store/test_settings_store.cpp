@@ -421,6 +421,7 @@ void test_a_damaged_name_shows_as_none_in_the_log_line() {
 void test_the_keys_fit_the_limit_of_the_flash() {
   TEST_ASSERT_TRUE(strlen(key::kWifi) <= 15);
   TEST_ASSERT_TRUE(strlen(key::kApiKey) <= 15);
+  TEST_ASSERT_TRUE(strlen(key::kEnrolled) <= 15);
 }
 
 int main(int, char **) {

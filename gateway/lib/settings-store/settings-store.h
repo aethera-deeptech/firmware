@@ -15,7 +15,7 @@ namespace key {
 // network next to the password of an old one. The name has no control characters, so the first line feed is always the separator.
 constexpr const char *kWifi = "wifi";
 constexpr const char *kApiKey = "api_key";
-// The value is "1" when the owner claimed the hub with the current key, and the key is missing otherwise.
+// The value is "1" when the owner claimed the hub with the current key, and the flag is removed otherwise.
 constexpr const char *kEnrolled = "enrolled";
 }  // namespace key
 
