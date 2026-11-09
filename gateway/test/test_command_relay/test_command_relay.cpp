@@ -680,6 +680,25 @@ void test_answers_about_unknown_nodes_are_capped_and_never_push_out_a_result_tha
   TEST_ASSERT_EQUAL_UINT(0, rig.relay.resultCount());
 }
 
+void test_a_record_whose_result_still_waits_is_kept_after_its_command_and_its_number_reserve_ended() {
+  Rig rig;
+  char plug[kNodeIdSize];
+  pairPlug(rig, 1, plug);
+  finishCommand(rig, 1, "ran-1", kExpires, 10);
+  // A long outage. The time of the service is far past the end of the command and of the reserve of its number, and the result was never passed on.
+  const uint32_t later = kExpires + kNumberReserveSeconds + 3600;
+  rig.relay.forgetEnded(later);
+  TEST_ASSERT_EQUAL_STRING("ran-1", rig.log.slots[0].id);
+  TEST_ASSERT_EQUAL_UINT(1, rig.relay.resultCount());
+  // After the batch is acknowledged the record is not needed any more, and the next call forgets it.
+  rig.relay.dropResults(1);
+  rig.relay.forgetEnded(later);
+  CommandRelay restarted(rig.sender, rig.registry, rig.log, 0x206);
+  TEST_ASSERT_EQUAL_UINT(1, restarted.load());
+  TEST_ASSERT_EQUAL_INT(result(SubmitResult::Queued), result(restarted.submit(0, later, "fresh-1", plug, true, later + 100)));
+  TEST_ASSERT_EQUAL_INT(result(SubmitResult::Queued), result(rig.relay.submit(0, later, "fresh-2", plug, true, later + 100)));
+}
+
 void test_a_command_whose_life_is_over_is_not_sent_when_a_frame_comes_before_update() {
   Rig rig;
   char plug[kNodeIdSize];
@@ -772,6 +791,7 @@ int main() {
   RUN_TEST(test_the_last_free_log_slot_is_promised_to_one_queued_command_only);
   RUN_TEST(test_an_unknown_node_with_no_id_does_not_turn_a_result_of_a_command_that_ran_into_a_failure);
   RUN_TEST(test_answers_about_unknown_nodes_are_capped_and_never_push_out_a_result_that_a_batch_took);
+  RUN_TEST(test_a_record_whose_result_still_waits_is_kept_after_its_command_and_its_number_reserve_ended);
   RUN_TEST(test_a_command_whose_life_is_over_is_not_sent_when_a_frame_comes_before_update);
   RUN_TEST(test_a_command_is_not_sent_to_a_node_that_was_removed_and_forget_ends_it_for_a_pairing_that_comes_back);
   RUN_TEST(test_resends_stop_when_the_newest_frame_is_too_old_and_start_again_with_the_next_frame);

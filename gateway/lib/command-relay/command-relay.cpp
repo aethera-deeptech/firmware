@@ -359,9 +359,11 @@ void CommandRelay::forget(const uint8_t mac[kMacSize]) {
 }
 
 void CommandRelay::forgetEnded(uint32_t serverTime) {
-  // The number of a command stays reserved for the time that a plug remembers it, so the record goes later than the command does.
+  // The number of a command stays reserved for the time that a plug remembers it, so the record goes later than the command does. A record whose result
+  // still waits for a batch stays, for example after a long outage, so the list of results never holds more than the log can account for.
   for (size_t i = 0; i < kCommandLogSlots; i++) {
-    if (records_[i].state != CommandState::Free && records_[i].expiresAt + kNumberReserveSeconds < serverTime) {
+    if (records_[i].state != CommandState::Free && records_[i].expiresAt + kNumberReserveSeconds < serverTime &&
+        !resultWaiting(records_[i].id)) {
       memset(&records_[i], 0, sizeof(records_[i]));
     }
   }
