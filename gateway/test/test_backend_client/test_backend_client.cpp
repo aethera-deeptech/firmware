@@ -2,10 +2,12 @@
 #include <unity.h>
 
 #include <deque>
+#include <map>
 #include <string>
 
 #include "../support/fake-crypto.h"
 #include "backend-client.h"
+#include "flash-client-store.h"
 
 using namespace wattlink;
 using namespace wattlink::testsupport;
@@ -1266,6 +1268,63 @@ void test_a_key_is_not_in_the_enroll_body_or_the_poll_path() {
   }
 }
 
+class MapStore : public KeyValueStore {
+ public:
+  bool get(const char *key, char *out, size_t size) override {
+    const auto found = data.find(key);
+    if (size > 0) {
+      out[0] = '\0';
+    }
+    if (found == data.end() || found->second.size() + 1 > size) {
+      return false;
+    }
+    memcpy(out, found->second.c_str(), found->second.size() + 1);
+    return true;
+  }
+  bool put(const char *key, const char *value) override {
+    data[key] = value;
+    return true;
+  }
+  bool remove(const char *key) override {
+    data.erase(key);
+    return true;
+  }
+  std::map<std::string, std::string> data;
+};
+
+uint32_t countingRandom(void *context) {
+  uint32_t *counter = static_cast<uint32_t *>(context);
+  *counter += 0x9E3779B9u;
+  return *counter;
+}
+
+void test_the_flash_store_keeps_the_key_and_the_flag_and_a_new_enrollment_changes_both() {
+  Rig rig;
+  MapStore flash;
+  SettingsStore settings(flash);
+  uint32_t counter = 1;
+  FlashClientStore store(settings, countingRandom, &counter);
+  BackendClient client(rig.http, store, rig.builder, rig.relay, Rig::config());
+  TEST_ASSERT_TRUE(client.begin(0));
+  rig.http.reply(201, enrollAnswer());
+  rig.http.reply(200);
+  for (uint32_t t = 0; t <= 6000; t += 100) {
+    client.update(t, true);
+  }
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(ClientState::Running), static_cast<int>(client.state()));
+  TEST_ASSERT_EQUAL_STRING("1", flash.data["enrolled"].c_str());
+  const std::string firstKey = flash.data["api_key"];
+  TEST_ASSERT_EQUAL_UINT(kGeneratedApiKeyLength, firstKey.size());
+  // The key that was made at the enrollment is the one that the next start finds, and the hub is enrolled.
+  BackendClient again(rig.http, store, rig.builder, rig.relay, Rig::config());
+  TEST_ASSERT_TRUE(again.begin(7000));
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(ClientState::Running), static_cast<int>(again.state()));
+  TEST_ASSERT_TRUE(again.requestNewEnroll(7100));
+  TEST_ASSERT_TRUE(flash.data["api_key"] != firstKey);
+  TEST_ASSERT_TRUE(flash.data.find("enrolled") == flash.data.end());
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(ClientState::NeedEnroll), static_cast<int>(again.state()));
+}
+
 }  // namespace
 
 void setUp() {}
@@ -1326,5 +1385,6 @@ int main() {
   RUN_TEST(test_a_flag_that_could_not_be_written_is_written_again_by_the_next_good_answer);
   RUN_TEST(test_the_gesture_works_while_a_code_is_shown_and_asks_for_another_code);
   RUN_TEST(test_a_key_is_not_in_the_enroll_body_or_the_poll_path);
+  RUN_TEST(test_the_flash_store_keeps_the_key_and_the_flag_and_a_new_enrollment_changes_both);
   return UNITY_END();
 }
