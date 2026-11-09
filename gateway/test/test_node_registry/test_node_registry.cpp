@@ -118,6 +118,28 @@ void test_the_id_is_the_kind_and_the_last_three_bytes_of_the_mac() {
   TEST_ASSERT_EQUAL_STRING("", id);
 }
 
+void test_a_paired_node_is_found_by_its_id_and_a_removed_or_unknown_id_is_not() {
+  FakeStore store;
+  NodeRegistry registry(store);
+  registry.pair(kKindPlug, kMacA, kKeyA);
+  registry.pair(kKindClamp, kMacB, kKeyB);
+  uint8_t mac[kMacSize] = {0};
+  TEST_ASSERT_TRUE(registry.macOf("PLUG-3C5AA4", mac));
+  TEST_ASSERT_EQUAL_UINT8_ARRAY(kMacA, mac, kMacSize);
+  TEST_ASSERT_TRUE(registry.macOf("CLAMP-B6E084", mac));
+  TEST_ASSERT_EQUAL_UINT8_ARRAY(kMacB, mac, kMacSize);
+  // The id has to match in full, with the kind, in capitals and with nothing after it.
+  TEST_ASSERT_FALSE(registry.macOf("PLUG-B6E084", mac));
+  TEST_ASSERT_FALSE(registry.macOf("plug-3c5aa4", mac));
+  TEST_ASSERT_FALSE(registry.macOf("PLUG-3C5AA4X", mac));
+  TEST_ASSERT_FALSE(registry.macOf("PLUG-3C5AA", mac));
+  TEST_ASSERT_FALSE(registry.macOf("", mac));
+  TEST_ASSERT_FALSE(registry.macOf(nullptr, mac));
+  // A removed node keeps its id, but no pairing, so it is not found.
+  TEST_ASSERT_TRUE(registry.unpair(kMacA));
+  TEST_ASSERT_FALSE(registry.macOf("PLUG-3C5AA4", mac));
+}
+
 void test_the_longest_id_fits_the_buffer() {
   FakeStore store;
   NodeRegistry registry(store);
@@ -679,6 +701,7 @@ int main(int, char **) {
   RUN_TEST(test_removing_forgets_the_pairing_and_wipes_the_key);
   RUN_TEST(test_a_removed_node_pairs_again_in_its_old_slot_with_a_clean_boot_value);
   RUN_TEST(test_a_removed_node_that_comes_back_as_the_other_kind_takes_a_new_slot);
+  RUN_TEST(test_a_paired_node_is_found_by_its_id_and_a_removed_or_unknown_id_is_not);
   RUN_TEST(test_the_registry_is_full_after_64_ids_for_the_life_of_the_gateway);
   RUN_TEST(test_a_failed_write_leaves_no_pairing);
   RUN_TEST(test_a_failed_write_when_pairing_again_leaves_the_node_removed);

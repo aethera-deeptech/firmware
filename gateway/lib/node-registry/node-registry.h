@@ -76,6 +76,10 @@ class NodeRegistry {
   // Writes the id for the backend, for example PLUG-A1B2C3, and a terminating zero. Returns false when the MAC is not paired.
   bool nodeId(const uint8_t mac[kMacSize], char out[kNodeIdSize]) const;
 
+  // The reverse of nodeId(). Finds the paired node with this id and writes its MAC. Returns false when no paired node has the id, which is also the
+  // answer for a node that was removed, because its id stays but its pairing does not.
+  bool macOf(const char *nodeId, uint8_t mac[kMacSize]) const;
+
   // Tells whether a frame is fresh. It changes nothing, so the caller can run it before the tag is checked.
   FrameCheck check(const uint8_t mac[kMacSize], uint32_t bootId, uint32_t counter) const;
 

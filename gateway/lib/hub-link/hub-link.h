@@ -58,7 +58,16 @@ struct LinkEvent {
   size_t samples;            // set for Telemetry and PairedNode
 };
 
-class HubLink {
+// The way out for a COMMAND frame. HubLink is the real one, and the tests of the command module give a fake one.
+class CommandSender {
+ public:
+  virtual ~CommandSender() = default;
+  // Sends a COMMAND to a paired node. The echo is the bootId and the counter of a TELEMETRY frame of that node. The action is 1 for on and 0 for off.
+  // Returns false when the command was not handed to the radio.
+  virtual bool sendCommand(const uint8_t mac[kMacSize], uint32_t echoBootId, uint32_t echoCounter, uint16_t number, uint8_t action) = 0;
+};
+
+class HubLink : public CommandSender {
  public:
   // The boot number of the hub comes from the pairing, so both use one value. It must already be in flash, because the hub sends no frame before
   // that, and a value of 0 means that it was not read, so the hub then ignores every frame and sends nothing.
@@ -73,10 +82,10 @@ class HubLink {
   // A frame arrived from the radio address mac. Returns what happened. It never keeps the frame.
   LinkEvent onFrame(uint32_t nowMs, const uint8_t mac[kMacSize], const uint8_t *frame, size_t length);
 
-  // Sends a COMMAND to a paired node. The echo is the bootId and the counter of a TELEMETRY frame of that node, as the event of that frame names them.
-  // The action is 1 for on and 0 for off. Returns false when the node is not paired, the action is not 0 or 1, or the radio refused the frame.
+  // The echo is the bootId and the counter of a TELEMETRY frame of that node, as the event of that frame names them. Returns false when the node is not
+  // paired, the action is not 0 or 1, the hub has no boot number, or the radio refused the frame.
   // The command goes out with the counter of this class, so a pair of boot number and counter is never used twice with a key.
-  bool sendCommand(const uint8_t mac[kMacSize], uint32_t echoBootId, uint32_t echoCounter, uint16_t number, uint8_t action);
+  bool sendCommand(const uint8_t mac[kMacSize], uint32_t echoBootId, uint32_t echoCounter, uint16_t number, uint8_t action) override;
 
  private:
   void onHello(uint32_t nowMs, const uint8_t mac[kMacSize], const uint8_t *frame, size_t length, LinkEvent *event);

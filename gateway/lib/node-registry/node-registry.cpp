@@ -273,6 +273,23 @@ bool NodeRegistry::nodeId(const uint8_t mac[kMacSize], char out[kNodeIdSize]) co
   return makeNodeId(slots_[index].kind, mac, out);
 }
 
+bool NodeRegistry::macOf(const char *nodeId, uint8_t mac[kMacSize]) const {
+  if (nodeId == nullptr) {
+    return false;
+  }
+  for (size_t i = 0; i < kMaxNodes; i++) {
+    if (slots_[i].state != kInUse || !slots_[i].paired) {
+      continue;
+    }
+    char candidate[kNodeIdSize];
+    if (makeNodeId(slots_[i].kind, slots_[i].mac, candidate) && strncmp(candidate, nodeId, kNodeIdSize) == 0) {
+      memcpy(mac, slots_[i].mac, kMacSize);
+      return true;
+    }
+  }
+  return false;
+}
+
 FrameCheck NodeRegistry::check(const uint8_t mac[kMacSize], uint32_t bootId, uint32_t counter) const {
   const int index = findPaired(mac);
   if (index < 0) {
