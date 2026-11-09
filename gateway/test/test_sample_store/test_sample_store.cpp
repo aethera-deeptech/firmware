@@ -58,6 +58,7 @@ void test_the_limits_are_the_ones_of_the_contract() {
   TEST_ASSERT_EQUAL_UINT(100, kMaxPowerFactorCenti);
   TEST_ASSERT_EQUAL_UINT(3, kMaxCondition);
   TEST_ASSERT_EQUAL_UINT32(86400000u, kMaxSampleAgeMs);
+  TEST_ASSERT_EQUAL_UINT32(86400000u - 600000u, kKeepSampleMs);
 }
 
 void test_a_good_sample_is_stored_in_the_units_of_the_frame() {
@@ -111,9 +112,14 @@ void test_a_frame_of_repeats_is_acknowledged_with_the_highest_number_that_is_hel
 void test_the_acknowledged_number_is_never_below_the_highest_of_the_frame() {
   SampleStore store;
   // The first frame after a start of the hub is new even when its numbers are high, and a gap before it is lost for good.
-  Sample frame[2] = {sampleWith(40), sampleWith(41)};
-  TEST_ASSERT_EQUAL_UINT32(41, send(store, 1000, kMacA, kBoot, frame, 2));
-  TEST_ASSERT_EQUAL_UINT(2, store.size());
+  Sample first[2] = {sampleWith(40), sampleWith(41)};
+  TEST_ASSERT_EQUAL_UINT32(41, send(store, 1000, kMacA, kBoot, first, 2));
+  // A frame of repeats and a new sample after a gap gives the number of the new sample, and a frame of repeats only gives the held number.
+  Sample mixed[3] = {sampleWith(40), sampleWith(41), sampleWith(45)};
+  TEST_ASSERT_EQUAL_UINT32(45, send(store, 2000, kMacA, kBoot, mixed, 3));
+  Sample old[2] = {sampleWith(40), sampleWith(41)};
+  TEST_ASSERT_EQUAL_UINT32(45, send(store, 3000, kMacA, kBoot, old, 2));
+  TEST_ASSERT_EQUAL_UINT(3, store.size());
 }
 
 void test_samples_out_of_order_in_one_frame_are_handled_by_the_running_highest_number() {
@@ -129,16 +135,20 @@ void test_a_new_boot_of_the_node_counts_from_zero_again() {
   sendOne(store, 1000, kMacA, kBoot, sampleWith(90));
   TEST_ASSERT_EQUAL_UINT32(0, sendOne(store, 2000, kMacA, kBoot + 1, sampleWith(0)));
   TEST_ASSERT_EQUAL_UINT(2, store.size());
-  // The old boot is a repeat of nothing now, because the store follows the node and not the history.
+  // The same number again in the new boot is a repeat.
   TEST_ASSERT_EQUAL_UINT32(0, sendOne(store, 3000, kMacA, kBoot + 1, sampleWith(0)));
   TEST_ASSERT_EQUAL_UINT(2, store.size());
+  // The store follows the boot that it sees last, so a lower boot number starts the count again too.
+  TEST_ASSERT_EQUAL_UINT32(0, sendOne(store, 4000, kMacA, kBoot - 1, sampleWith(0)));
+  TEST_ASSERT_EQUAL_UINT(3, store.size());
 }
 
 void test_after_a_start_of_the_hub_the_first_sample_is_new_whatever_its_number() {
   SampleStore store;
   TEST_ASSERT_EQUAL_UINT32(0, sendOne(store, 1000, kMacA, kBoot, sampleWith(0)));
+  // The store of a restarted hub knows nothing of the node, so a high number is new and is acknowledged.
   SampleStore restarted;
-  TEST_ASSERT_EQUAL_UINT32(0, sendOne(restarted, 1000, kMacA, kBoot, sampleWith(0)));
+  TEST_ASSERT_EQUAL_UINT32(500, sendOne(restarted, 1000, kMacA, kBoot, sampleWith(500)));
   TEST_ASSERT_EQUAL_UINT(1, restarted.size());
 }
 
@@ -312,6 +322,79 @@ void test_the_table_holds_64_nodes_and_refuses_a_65th_until_one_is_forgotten() {
   TEST_ASSERT_EQUAL_UINT32(0, sendOne(store, 1000, mac, kBoot, sampleWith(0)));
 }
 
+void test_a_frame_with_a_bad_power_and_a_good_sample_acknowledges_both() {
+  SampleStore store;
+  Sample frame[2] = {sampleWith(1), sampleWith(2)};
+  frame[0].powerDeciW = kNoU32;
+  TEST_ASSERT_EQUAL_UINT32(2, send(store, 1000, kMacA, kBoot, frame, 2));
+  TEST_ASSERT_EQUAL_UINT(1, store.size());
+  TEST_ASSERT_EQUAL_UINT32(1, store.counts().rejected);
+}
+
+void test_expire_drops_samples_that_were_held_too_long_whatever_their_place_in_the_pool() {
+  SampleStore store;
+  // A node can set any age, so the pool is not in the order of the age. The first sample is the newest.
+  Sample recent = sampleWith(1);
+  recent.ageMs = 0;
+  sendOne(store, 100000, kMacA, kBoot, recent);
+  Sample old = sampleWith(2);
+  old.ageMs = kMaxSampleAgeMs;
+  sendOne(store, 100000, kMacA, kBoot, old);
+  TEST_ASSERT_EQUAL_UINT(2, store.size());
+  // The second sample was 24 hours old at its arrival, which is past the keep window, so it goes at once and the first stays.
+  TEST_ASSERT_EQUAL_UINT(1, store.expire(100000));
+  TEST_ASSERT_EQUAL_UINT(1, store.size());
+  TEST_ASSERT_EQUAL_UINT32(100000, store.at(0).capturedMs);
+  TEST_ASSERT_EQUAL_UINT(0, store.expire(100000 + kKeepSampleMs));
+  TEST_ASSERT_EQUAL_UINT(1, store.expire(100000 + kKeepSampleMs + 1));
+  TEST_ASSERT_EQUAL_UINT(0, store.size());
+  TEST_ASSERT_EQUAL_UINT32(2, store.counts().expired);
+}
+
+void test_expire_works_across_the_wrap_of_the_clock() {
+  SampleStore store;
+  Sample sample = sampleWith(1);
+  sample.ageMs = 0;
+  sendOne(store, 0xFFFFFF00u, kMacA, kBoot, sample);
+  const uint32_t edge = 0xFFFFFF00u + kKeepSampleMs;
+  TEST_ASSERT_EQUAL_UINT(0, store.expire(edge));
+  TEST_ASSERT_EQUAL_UINT(1, store.expire(edge + 1));
+}
+
+void test_expire_works_when_the_pool_has_wrapped_around() {
+  SampleStore store;
+  for (uint32_t i = 0; i < kSamplePoolSize + 10; i++) {
+    Sample sample = sampleWith(i);
+    sample.ageMs = (i % 2 == 0) ? 0 : 1000;
+    sendOne(store, 5000, kMacA, kBoot, sample);
+  }
+  TEST_ASSERT_EQUAL_UINT(kSamplePoolSize, store.size());
+  // Samples that arrived with an age of 1000 ms were taken at 4000 ms, and the others at 5000 ms. At this time only the first kind is past the window.
+  const size_t removed = store.expire(5000 + kKeepSampleMs);
+  TEST_ASSERT_EQUAL_UINT(kSamplePoolSize / 2, removed);
+  for (size_t i = 0; i < store.size(); i++) {
+    TEST_ASSERT_EQUAL_UINT32(5000, store.at(i).capturedMs);
+  }
+}
+
+void test_a_full_pool_works_with_forget_and_a_push_after_a_discard_at_the_wrap() {
+  SampleStore store;
+  for (uint32_t i = 0; i < kSamplePoolSize + 5; i++) {
+    sendOne(store, 1000 + i, (i % 2 == 0) ? kMacA : kMacB, kBoot, sampleWith(i));
+  }
+  store.forget(kMacA);
+  const size_t half = store.size();
+  // Room for a new sample, and the order is still the order of arrival.
+  sendOne(store, 9000, kMacB, kBoot, sampleWith(100000));
+  TEST_ASSERT_EQUAL_UINT(half + 1, store.size());
+  TEST_ASSERT_EQUAL_UINT32(9000 - 500, store.at(store.size() - 1).capturedMs);
+  store.discardOldest(half);
+  TEST_ASSERT_EQUAL_UINT(1, store.size());
+  sendOne(store, 9100, kMacB, kBoot, sampleWith(100001));
+  TEST_ASSERT_EQUAL_UINT(2, store.size());
+  TEST_ASSERT_EQUAL_UINT32(9100 - 500, store.at(1).capturedMs);
+}
+
 int main() {
   UNITY_BEGIN();
   RUN_TEST(test_the_limits_are_the_ones_of_the_contract);
@@ -335,5 +418,10 @@ int main() {
   RUN_TEST(test_forget_drops_the_samples_and_the_numbers_of_a_node_and_keeps_the_others_in_order);
   RUN_TEST(test_forget_works_when_the_pool_has_wrapped_around);
   RUN_TEST(test_the_table_holds_64_nodes_and_refuses_a_65th_until_one_is_forgotten);
+  RUN_TEST(test_a_frame_with_a_bad_power_and_a_good_sample_acknowledges_both);
+  RUN_TEST(test_expire_drops_samples_that_were_held_too_long_whatever_their_place_in_the_pool);
+  RUN_TEST(test_expire_works_across_the_wrap_of_the_clock);
+  RUN_TEST(test_expire_works_when_the_pool_has_wrapped_around);
+  RUN_TEST(test_a_full_pool_works_with_forget_and_a_push_after_a_discard_at_the_wrap);
   return UNITY_END();
 }

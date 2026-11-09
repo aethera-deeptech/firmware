@@ -128,23 +128,34 @@ void SampleStore::discardOldest(size_t count) {
   size_ -= count;
 }
 
+template <typename Drop>
+size_t SampleStore::removeWhere(Drop drop) {
+  size_t kept = 0;
+  for (size_t i = 0; i < size_; i++) {
+    const StoredSample sample = at(i);
+    if (!drop(sample)) {
+      pool_[(head_ + kept) % kSamplePoolSize] = sample;
+      kept++;
+    }
+  }
+  const size_t removed = size_ - kept;
+  size_ = kept;
+  return removed;
+}
+
 void SampleStore::forget(const uint8_t mac[kMacSize]) {
   const int index = findNode(mac);
   if (index < 0) {
     return;
   }
-  // The samples of other nodes move towards the head, in the same order. A write goes to the place of the kept count and a read comes from the place of
-  // the index, and the kept count is never above the index, so a sample is read before its place is written, also when the pool wraps around.
-  size_t kept = 0;
-  for (size_t i = 0; i < size_; i++) {
-    const StoredSample sample = at(i);
-    if (sample.node != index) {
-      pool_[(head_ + kept) % kSamplePoolSize] = sample;
-      kept++;
-    }
-  }
-  size_ = kept;
+  removeWhere([index](const StoredSample &sample) { return sample.node == index; });
   memset(&nodes_[index], 0, sizeof(nodes_[index]));
+}
+
+size_t SampleStore::expire(uint32_t nowMs) {
+  const size_t removed = removeWhere([nowMs](const StoredSample &sample) { return static_cast<uint32_t>(nowMs - sample.capturedMs) > kKeepSampleMs; });
+  counts_.expired += static_cast<uint32_t>(removed);
+  return removed;
 }
 
 }  // namespace wattlink

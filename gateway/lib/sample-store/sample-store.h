@@ -13,12 +13,16 @@ namespace wattlink {
 // tests and on the chip. One task must call all of it. It builds no batch and has no clock of the world. The time of a sample is kept as the millis counter of the hub
 // (capturedMs), and the batch code turns it into Unix seconds when the clock of the hub is set.
 
-// The pool holds this many samples for all nodes, oldest first. When it is full, the oldest sample is dropped. It is 24 bytes for each sample, so about 48 KB of RAM.
+// The pool holds this many samples for all nodes, oldest first. When it is full, the oldest sample is dropped. It is 24 bytes for each sample, so about 48 KB of RAM,
+// and the whole class is about 50 KB. It must be a static object, because it does not fit on the stack of a task, and a block of that size may not be free later.
 // Three nodes that send a sample every 10 seconds fill it in about 2 hours, and 64 nodes fill it in about 5 minutes.
 constexpr size_t kSamplePoolSize = 2048;
 
-// The backend drops a sample that is older than a day, so the hub does not keep one.
+// The backend drops a sample that is older than a day. The hub refuses a sample that arrives with an age above a day, and expire() drops a held sample before it
+// is a day old, with a margin for the time that a batch takes.
 constexpr uint32_t kMaxSampleAgeMs = 24UL * 60UL * 60UL * 1000UL;
+constexpr uint32_t kExpiryMarginMs = 10UL * 60UL * 1000UL;
+constexpr uint32_t kKeepSampleMs = kMaxSampleAgeMs - kExpiryMarginMs;
 
 // The limits of the schema Sample, in the units of the frame. Power is required, and a sample without a power in range is dropped. The other values are left out
 // when they are out of range, so the backend does not refuse the sample.
@@ -59,6 +63,7 @@ struct SampleCounts {
   uint32_t repeats;     // samples whose sampleSeq was not new
   uint32_t rejected;    // samples that the backend would refuse (no power, power out of range, older than a day, sampleSeq of all bits)
   uint32_t overflowed;  // samples that were dropped because the pool was full
+  uint32_t expired;     // samples that were held too long, see expire()
   uint32_t refused;     // frames from a node that the table had no room for
 };
 
@@ -88,6 +93,11 @@ class SampleStore : public SampleSink {
   // Drops the oldest samples, for example after the backend took them.
   void discardOldest(size_t count);
 
+  // Drops every sample that has been held for more than kKeepSampleMs, so the batch code never sends one that the backend would refuse as older than a day.
+  // The pool is in the order of arrival and the ages are not, because a node sets its own age, so this looks at every sample. Call it before each batch and so
+  // often that no sample reaches an age of 49 days, when the counter of the clock wraps. Returns the number of samples that it dropped.
+  size_t expire(uint32_t nowMs);
+
   const SampleCounts &counts() const { return counts_; }
 
  private:
@@ -102,6 +112,10 @@ class SampleStore : public SampleSink {
   int findNode(const uint8_t mac[kMacSize]) const;
   bool store(uint32_t nowMs, uint8_t node, const Sample &sample);
   void push(const StoredSample &sample);
+  // Drops every sample for which drop() is true. The kept samples move towards the head in the same order. A write goes to the place of the kept count and a
+  // read comes from the place of the index, and the kept count is never above the index, so a sample is read before its place is written, also when the pool wraps.
+  template <typename Drop>
+  size_t removeWhere(Drop drop);
 
   NodeState nodes_[kMaxNodes];
   StoredSample pool_[kSamplePoolSize];
