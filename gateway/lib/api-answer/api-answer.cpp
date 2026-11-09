@@ -49,6 +49,9 @@ class Scanner {
     return cur_ == end_;
   }
 
+  // True when the scan stopped because the body ended, which is the case for a body that was cut.
+  bool stoppedAtEnd() const { return cur_ == end_; }
+
   // Reads a string and writes its text with a terminating zero. *fits is false when the text did not fit or when it holds a character that cannot be written
   // (the buffer then holds the part that fitted). Returns false when the string is not valid JSON.
   bool readString(char *out, size_t size, bool *fits) {
@@ -106,17 +109,18 @@ class Scanner {
               }
               code = code * 16 + static_cast<uint32_t>(digit);
             }
-            // Only plain ASCII is kept. Every field that the hub reads is ASCII, and a text with another character is not one of them.
-            if (code == 0 || code >= 0x80) {
-              *fits = false;
-              continue;
-            }
-            c = static_cast<unsigned char>(code);
+            c = code < 0x100 ? static_cast<unsigned char>(code) : 0xFF;
             break;
           }
           default:
             return false;
         }
+      }
+      // Only printable ASCII is kept, from the raw bytes and from the escapes. Every field that the hub reads is plain text of that kind, and a text with
+      // another character (a control character, a byte above 127) is not one of them. It never reaches a log line or the display.
+      if (c < 0x20 || c >= 0x7F) {
+        *fits = false;
+        continue;
       }
       if (length + 1 < size) {
         out[length++] = static_cast<char>(c);
@@ -302,7 +306,15 @@ class Scanner {
 
   bool literal(const char *word) {
     const size_t length = strlen(word);
-    if (static_cast<size_t>(end_ - cur_) < length || memcmp(cur_, word, length) != 0) {
+    const size_t left = static_cast<size_t>(end_ - cur_);
+    if (left < length) {
+      // A word that is cut by the end of the body is the end of the body, and not a broken word.
+      if (memcmp(cur_, word, left) == 0) {
+        cur_ = end_;
+      }
+      return false;
+    }
+    if (memcmp(cur_, word, length) != 0) {
       return false;
     }
     cur_ += length;
@@ -373,6 +385,17 @@ bool expect(const char **cursor, char c) {
 
 // ---- The answer of the readings route
 
+// The characters that the contract allows in a node id.
+bool isNodeIdText(const char *text) {
+  for (const char *p = text; *p != '\0'; p++) {
+    const char c = *p;
+    if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c == ':' || c == '_' || c == '-')) {
+      return false;
+    }
+  }
+  return true;
+}
+
 struct CommandContext {
   char id[kResultIdSize];
   char nodeId[kNodeIdSize];
@@ -417,7 +440,7 @@ bool onCommandElement(void *raw, Scanner &scanner) {
     return false;
   }
   uint32_t expiresAt = 0;
-  const bool good = command.haveId && isSafeResultId(command.id) && command.haveNode && command.nodeId[0] != '\0' && command.haveAction &&
+  const bool good = command.haveId && isSafeResultId(command.id) && command.haveNode && command.nodeId[0] != '\0' && isNodeIdText(command.nodeId) && command.haveAction &&
                     (strcmp(command.action, "on") == 0 || strcmp(command.action, "off") == 0) && command.haveExpires &&
                     parseIsoTime(command.expires, &expiresAt);
   if (!good) {
@@ -474,6 +497,7 @@ Field onErrorField(void *raw, Scanner &scanner, const char *key) {
   bool valid = false;
   if (strcmp(key, "code") == 0) {
     char text[kErrorCodeSize];
+    memset(text, 0, sizeof(text));
     if (!readStringField(scanner, text, sizeof(text), &valid)) {
       return Field::Malformed;
     }
@@ -522,12 +546,12 @@ Field onEnrollField(void *raw, Scanner &scanner, const char *key) {
     if (!readStringField(scanner, answer.claimCode, sizeof(answer.claimCode), &context.haveCode)) {
       return Field::Malformed;
     }
-    // The code has 8 characters from the alphabet of the service, and the hub shows it, so any other text is not shown.
+    // The code has 8 characters from the alphabet of the service (A to Z without I and O, and 2 to 9), and the hub shows it, so any other text is not shown.
     if (context.haveCode) {
       context.haveCode = strlen(answer.claimCode) == kClaimCodeSize - 1;
       for (size_t i = 0; context.haveCode && i < kClaimCodeSize - 1; i++) {
         const char c = answer.claimCode[i];
-        context.haveCode = (c >= 'A' && c <= 'Z') || (c >= '2' && c <= '9');
+        context.haveCode = (c >= 'A' && c <= 'Z' && c != 'I' && c != 'O') || (c >= '2' && c <= '9');
       }
     }
     return Field::Consumed;
@@ -552,12 +576,17 @@ Field onEnrollField(void *raw, Scanner &scanner, const char *key) {
   return Field::Unknown;
 }
 
-bool scanWholeObject(const char *body, size_t length, FieldFn fn, void *context) {
+// A body that was cut at the end of the buffer (truncated) counts as read when the scan ran out of bytes and not when it met bytes that are wrong. The
+// caller then checks that the fields that it needs were read before the cut.
+bool scanWholeObject(const char *body, size_t length, bool truncated, FieldFn fn, void *context) {
   if (body == nullptr || length == 0 || length > kMaxAnswerBytes) {
     return false;
   }
   Scanner scanner(body, length);
-  return scanner.object(fn, context, 0) && scanner.atEnd();
+  if (scanner.object(fn, context, 0) && scanner.atEnd()) {
+    return true;
+  }
+  return truncated && scanner.stoppedAtEnd();
 }
 
 }  // namespace
@@ -638,13 +667,13 @@ bool parseIsoTime(const char *text, uint32_t *unixSeconds) {
   return true;
 }
 
-bool parseReadingsAnswer(const char *body, size_t length, ReadingsAnswer *out) {
+bool parseReadingsAnswer(const char *body, size_t length, ReadingsAnswer *out, bool truncated) {
   memset(out, 0, sizeof(*out));
   ReadingsContext context;
   context.out = out;
   context.haveAck = false;
   context.haveTime = false;
-  if (!scanWholeObject(body, length, onReadingsField, &context) || !context.haveAck || !context.haveTime) {
+  if (!scanWholeObject(body, length, truncated, onReadingsField, &context) || !context.haveAck || !context.haveTime) {
     memset(out, 0, sizeof(*out));
     return false;
   }
@@ -658,7 +687,7 @@ bool parseEnrollAnswer(const char *body, size_t length, EnrollAnswer *out) {
   context.haveCode = false;
   context.havePoll = false;
   context.haveExpires = false;
-  if (!scanWholeObject(body, length, onEnrollField, &context) || !context.haveCode || !context.havePoll || !context.haveExpires) {
+  if (!scanWholeObject(body, length, false, onEnrollField, &context) || !context.haveCode || !context.havePoll || !context.haveExpires) {
     memset(out, 0, sizeof(*out));
     return false;
   }
@@ -669,7 +698,7 @@ bool parseErrorAnswer(const char *body, size_t length, ErrorAnswer *out) {
   memset(out, 0, sizeof(*out));
   ErrorContext context;
   context.out = out;
-  if (!scanWholeObject(body, length, onErrorField, &context)) {
+  if (!scanWholeObject(body, length, false, onErrorField, &context)) {
     memset(out, 0, sizeof(*out));
     return false;
   }

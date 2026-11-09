@@ -191,16 +191,31 @@ void test_a_node_id_of_12_characters_fits_and_a_text_with_an_escape_is_read_as_i
   TEST_ASSERT_TRUE(a.commands[0].on);
 }
 
-void test_a_text_with_a_character_that_is_not_ascii_or_a_control_character_is_not_used() {
+void test_a_text_with_a_character_that_is_not_printable_ascii_is_not_used_in_any_field() {
   ReadingsAnswer a;
-  // An id with a character above ASCII is not safe, so the command is left out and the answer is still read.
-  TEST_ASSERT_TRUE(readings(answer("{\"id\":\"id\\u00e9\",\"nodeId\":\"PLUG-0001\",\"action\":\"on\",\"expiresAt\":\"2026-11-03T08:11:02Z\"}"), &a));
-  TEST_ASSERT_EQUAL_UINT(0, a.commandCount);
-  TEST_ASSERT_EQUAL_UINT(1, a.badCommands);
-  // A zero character in a text is not kept.
-  TEST_ASSERT_TRUE(readings(answer("{\"id\":\"id\\u0000x\",\"nodeId\":\"PLUG-0001\",\"action\":\"on\",\"expiresAt\":\"2026-11-03T08:11:02Z\"}"), &a));
-  TEST_ASSERT_EQUAL_UINT(0, a.commandCount);
-  // A raw line feed inside a string is not valid JSON.
+  // The node id is only checked for its characters, so these cases prove the rule of the scanner and not the check of an id. Each one is left out.
+  const char *nodes[] = {"PLUG-\\n1",         "PLUG-\\u0001x", "PLUG-\\u007f", "PLUG-\\u00e9", "PLUG-\\u0000x", "PLUG-\\u20ac",
+                         "PLUG-\xC3\xA9", "PLUG-\x7F",     "PLUG/0001",   "PLUG 0001",   "PLUG-\\\"1"};
+  for (const char *node : nodes) {
+    const std::string body = answer(std::string("{\"id\":\"id-1\",\"nodeId\":\"") + node + "\",\"action\":\"on\",\"expiresAt\":\"2026-11-03T08:11:02Z\"}");
+    TEST_ASSERT_TRUE(readings(body, &a));
+    TEST_ASSERT_EQUAL_UINT(0, a.commandCount);
+    TEST_ASSERT_EQUAL_UINT(1, a.badCommands);
+  }
+  // The characters of a node id of the contract are kept.
+  TEST_ASSERT_TRUE(readings(answer("{\"id\":\"id-1\",\"nodeId\":\"a:B_c-9\",\"action\":\"on\",\"expiresAt\":\"2026-11-03T08:11:02Z\"}"), &a));
+  TEST_ASSERT_EQUAL_UINT(1, a.commandCount);
+  // A code of an error with such a character is empty, and a code with only printable characters is kept.
+  ErrorAnswer e;
+  TEST_ASSERT_TRUE(failure("{\"code\":\"a\\nb\"}", &e));
+  TEST_ASSERT_EQUAL_STRING("", e.code);
+  TEST_ASSERT_TRUE(failure("{\"code\":\"a\\u001bb\"}", &e));
+  TEST_ASSERT_EQUAL_STRING("", e.code);
+  TEST_ASSERT_TRUE(failure("{\"code\":\"a\xC3\xA9\"}", &e));
+  TEST_ASSERT_EQUAL_STRING("", e.code);
+  TEST_ASSERT_TRUE(failure("{\"code\":\"a b~\"}", &e));
+  TEST_ASSERT_EQUAL_STRING("a b~", e.code);
+  // A raw line feed inside a string is not valid JSON at all.
   TEST_ASSERT_FALSE(readings("{\"ackSeq\":1,\"serverTime\":\"2026-11-03T08:01:02Z\",\"x\":\"a\nb\"}", &a));
 }
 
@@ -346,6 +361,8 @@ void test_an_enroll_answer_with_a_code_or_a_poll_id_that_the_hub_cannot_use_is_r
   TEST_ASSERT_FALSE(enroll("{\"claimCode\":\"abcd2345\"," + poll + ",\"expiresInSeconds\":600}", &e));   // lower case
   TEST_ASSERT_FALSE(enroll("{\"claimCode\":\"ABCD2340\"," + poll + ",\"expiresInSeconds\":600}", &e));   // 0 is not in the alphabet
   TEST_ASSERT_FALSE(enroll("{\"claimCode\":\"ABCD 345\"," + poll + ",\"expiresInSeconds\":600}", &e));
+  TEST_ASSERT_FALSE(enroll("{\"claimCode\":\"ABCDI345\"," + poll + ",\"expiresInSeconds\":600}", &e));   // no I in the alphabet
+  TEST_ASSERT_FALSE(enroll("{\"claimCode\":\"ABCDO345\"," + poll + ",\"expiresInSeconds\":600}", &e));   // no O in the alphabet
   TEST_ASSERT_FALSE(enroll("{\"claimCode\":12345678," + poll + ",\"expiresInSeconds\":600}", &e));
   TEST_ASSERT_FALSE(enroll("{\"pollId\":\"" + std::string(31, 'p') + "\",\"claimCode\":\"ABCD2345\",\"expiresInSeconds\":600}", &e));  // too short
   TEST_ASSERT_FALSE(enroll("{\"pollId\":\"" + std::string(65, 'p') + "\",\"claimCode\":\"ABCD2345\",\"expiresInSeconds\":600}", &e));  // too long
@@ -357,6 +374,144 @@ void test_an_enroll_answer_with_a_code_or_a_poll_id_that_the_hub_cannot_use_is_r
   TEST_ASSERT_FALSE(enroll("{}", &e));
   TEST_ASSERT_EQUAL_STRING("", e.claimCode);
   TEST_ASSERT_EQUAL_STRING("", e.pollId);
+}
+
+void test_the_edges_of_the_sizes_of_the_buffers() {
+  ReadingsAnswer a;
+  ErrorAnswer e;
+  // A code of 40 characters fits and a code of 41 does not.
+  TEST_ASSERT_TRUE(failure("{\"code\":\"" + std::string(40, 'c') + "\"}", &e));
+  TEST_ASSERT_EQUAL_UINT(40, strlen(e.code));
+  TEST_ASSERT_TRUE(failure("{\"code\":\"" + std::string(41, 'c') + "\"}", &e));
+  TEST_ASSERT_EQUAL_STRING("", e.code);
+  // A server time of 39 characters fits and one of 40 does not.
+  const std::string tail = "\",\"ackSeq\":1}";
+  TEST_ASSERT_TRUE(readings("{\"serverTime\":\"2026-11-03T08:01:02." + std::string(18, '1') + "Z" + tail, &a));
+  TEST_ASSERT_FALSE(readings("{\"serverTime\":\"2026-11-03T08:01:02." + std::string(19, '1') + "Z" + tail, &a));
+  // A key of 23 characters is read as a key and a key of 24 is not, and neither one is a key that the hub knows.
+  TEST_ASSERT_TRUE(readings("{\"" + std::string(23, 'k') + "\":1,\"" + std::string(24, 'k') + "\":2,\"ackSeq\":1,\"serverTime\":\"2026-11-03T08:01:02Z\"}", &a));
+  // The time form of the Go service, a fraction of nine digits and an offset.
+  TEST_ASSERT_EQUAL_UINT32(1793692862u, timeOf("2026-11-03T15:01:02.123456789+07:00"));
+  TEST_ASSERT_EQUAL_UINT32(951782400u, timeOf("2000-02-29T00:00:00Z"));
+}
+
+void test_the_nesting_limit_has_an_exact_edge_for_arrays_and_for_objects() {
+  ReadingsAnswer a;
+  const std::string head = "{\"ackSeq\":1,\"serverTime\":\"2026-11-03T08:01:02Z\",\"x\":";
+  for (int depth = 7; depth <= 9; depth++) {
+    std::string arrays = head;
+    std::string objects = head;
+    for (int i = 0; i < depth; i++) {
+      arrays += "[";
+      objects += "{\"k\":";
+    }
+    arrays += std::string(static_cast<size_t>(depth), ']');
+    objects += "1" + std::string(static_cast<size_t>(depth), '}');
+    const bool wanted = depth <= 8;
+    TEST_ASSERT_EQUAL(wanted, readings(arrays + "}", &a));
+    TEST_ASSERT_EQUAL(wanted, readings(objects + "}", &a));
+  }
+  // The same inside a command and inside the error body.
+  std::string inCommand = "{\"id\":\"id-1\",\"nodeId\":\"PLUG-0001\",\"action\":\"on\",\"expiresAt\":\"2026-11-03T08:11:02Z\",\"x\":";
+  inCommand += std::string(20000, '[');
+  TEST_ASSERT_FALSE(readings(answer(inCommand), &a));
+  ErrorAnswer e;
+  TEST_ASSERT_FALSE(failure("{\"fields\":" + std::string(20000, '[') + "}", &e));
+  TEST_ASSERT_EQUAL_STRING("", e.code);
+}
+
+void test_a_repeated_key_and_a_repeated_id_are_handled() {
+  ReadingsAnswer a;
+  const std::string one = command("id-1", "PLUG-0001", "on", "2026-11-03T08:11:02Z");
+  // A second list of commands replaces the first, with its counts.
+  TEST_ASSERT_TRUE(readings("{\"ackSeq\":1,\"serverTime\":\"2026-11-03T08:01:02Z\",\"commands\":[" + one + ",5],\"commands\":[" +
+                                command("id-2", "PLUG-0002", "off", "2026-11-03T08:11:02Z") + "]}",
+                            &a));
+  TEST_ASSERT_EQUAL_UINT(1, a.commandCount);
+  TEST_ASSERT_EQUAL_UINT(0, a.badCommands);
+  TEST_ASSERT_EQUAL_STRING("id-2", a.commands[0].id);
+  // The same id twice in one answer is given twice, because the command log of the relay decides what a repeat is.
+  TEST_ASSERT_TRUE(readings(answer(one + "," + one), &a));
+  TEST_ASSERT_EQUAL_UINT(2, a.commandCount);
+  // The enroll answer takes the last value of a repeated key.
+  EnrollAnswer e;
+  TEST_ASSERT_TRUE(enroll(std::string("{\"claimCode\":\"AAAAAAAA\",\"claimCode\":\"BBBBBBBB\",\"pollId\":\"") + kPoll + "\",\"expiresInSeconds\":600}", &e));
+  TEST_ASSERT_EQUAL_STRING("BBBBBBBB", e.claimCode);
+  TEST_ASSERT_FALSE(enroll(std::string("{\"claimCode\":\"AAAAAAAA\",\"claimCode\":5,\"pollId\":\"") + kPoll + "\",\"expiresInSeconds\":600}", &e));
+}
+
+void test_an_error_body_with_a_code_and_a_list_of_fields_and_a_wait_of_zero() {
+  ErrorAnswer e;
+  TEST_ASSERT_TRUE(failure("{\"code\":\"validation\",\"message\":\"m\",\"fields\":{\"a\":\"b\",\"c\":[1,{\"d\":null}]},\"retryAfterSeconds\":0}", &e));
+  TEST_ASSERT_EQUAL_STRING("validation", e.code);
+  TEST_ASSERT_EQUAL_UINT32(0, e.retryAfterSeconds);
+  TEST_ASSERT_FALSE(e.hasExpectedSeq);
+}
+
+std::string manyCommands(size_t count) {
+  std::string commands;
+  for (size_t i = 0; i < count; i++) {
+    if (i > 0) {
+      commands += ",";
+    }
+    commands += command(("id-" + std::to_string(i)).c_str(), "PLUG-0001", "on", "2026-11-03T08:11:02.123456789+07:00");
+  }
+  return commands;
+}
+
+void test_a_long_answer_that_was_cut_is_read_as_far_as_it_goes() {
+  ReadingsAnswer a;
+  const std::string body = answer(manyCommands(120));
+  TEST_ASSERT_TRUE(body.size() > kMaxAnswerBytes);
+  // Without the flag the cut body is refused, and with it the answer and the commands before the cut are kept.
+  TEST_ASSERT_FALSE(parseReadingsAnswer(body.data(), kMaxAnswerBytes, &a));
+  TEST_ASSERT_TRUE(parseReadingsAnswer(body.data(), kMaxAnswerBytes, &a, true));
+  TEST_ASSERT_EQUAL_UINT32(41, a.ackSeq);
+  TEST_ASSERT_EQUAL_UINT32(1793692862u, a.serverTime);
+  TEST_ASSERT_EQUAL_UINT(kMaxAnswerCommands, a.commandCount);
+  TEST_ASSERT_EQUAL_STRING("id-0", a.commands[0].id);
+  TEST_ASSERT_TRUE(a.extraCommands > 0);
+  TEST_ASSERT_EQUAL_UINT(0, a.badCommands);
+}
+
+void test_a_cut_at_every_byte_keeps_only_whole_commands_and_needs_the_first_fields() {
+  const std::string body = answer(command("id-1", "PLUG-0001", "on", "2026-11-03T08:11:02Z") + "," + command("id-2", "PLUG-0002", "off", "2026-11-03T08:11:02Z"));
+  const size_t afterTime = body.find("\"accepted\"");
+  for (size_t length = 1; length < body.size(); length++) {
+    ReadingsAnswer a;
+    const bool ok = parseReadingsAnswer(body.data(), length, &a, true);
+    // The answer is good once the time of the service is whole, which is a few bytes before the key after it.
+    TEST_ASSERT_EQUAL(length >= afterTime - 1, ok);
+    if (ok) {
+      TEST_ASSERT_TRUE(a.commandCount <= 2);
+      for (size_t i = 0; i < a.commandCount; i++) {
+        TEST_ASSERT_EQUAL_STRING(i == 0 ? "id-1" : "id-2", a.commands[i].id);
+        TEST_ASSERT_EQUAL_STRING(i == 0 ? "PLUG-0001" : "PLUG-0002", a.commands[i].nodeId);
+      }
+    }
+  }
+  ReadingsAnswer a;
+  TEST_ASSERT_TRUE(parseReadingsAnswer(body.data(), body.size(), &a, true));
+  TEST_ASSERT_EQUAL_UINT(2, a.commandCount);
+}
+
+void test_a_cut_body_with_wrong_bytes_before_the_cut_is_still_refused_and_the_keys_must_come_first() {
+  ReadingsAnswer a;
+  // A broken byte in the middle is not the end of the body.
+  TEST_ASSERT_FALSE(parseReadingsAnswer("{\"ackSeq\":1,\"serverTime\":\"2026-11-03T08:01:02Z\",\"x\":?,\"commands\":[", 62, &a, true));
+  // The fields come after the commands here, so the cut loses them.
+  const std::string late = "{\"commands\":[" + manyCommands(3) + "],\"ackSeq\":1,\"serverTime\":\"2026-11-03T08:01:02Z\"}";
+  TEST_ASSERT_FALSE(parseReadingsAnswer(late.data(), late.size() - 10, &a, true));
+  TEST_ASSERT_TRUE(parseReadingsAnswer(late.data(), late.size(), &a, true));
+  // Bytes after a whole object are not a cut.
+  const std::string good = answer("");
+  TEST_ASSERT_FALSE(parseReadingsAnswer((good + "x").data(), good.size() + 1, &a, true));
+  // A cut inside a word, a number and a string of a skipped value.
+  const std::string head = "{\"ackSeq\":1,\"serverTime\":\"2026-11-03T08:01:02Z\",\"accepted\":";
+  TEST_ASSERT_TRUE(parseReadingsAnswer((head + "tru").data(), head.size() + 3, &a, true));
+  TEST_ASSERT_TRUE(parseReadingsAnswer((head + "12").data(), head.size() + 2, &a, true));
+  TEST_ASSERT_TRUE(parseReadingsAnswer((head + "\"ab").data(), head.size() + 3, &a, true));
+  TEST_ASSERT_FALSE(parseReadingsAnswer((head + "trx").data(), head.size() + 3, &a, true));
 }
 
 }  // namespace
@@ -378,7 +533,7 @@ int main() {
   RUN_TEST(test_a_key_that_comes_twice_is_taken_from_its_last_value);
   RUN_TEST(test_a_command_that_cannot_be_run_is_counted_and_left_out_and_the_rest_stay);
   RUN_TEST(test_a_node_id_of_12_characters_fits_and_a_text_with_an_escape_is_read_as_its_characters);
-  RUN_TEST(test_a_text_with_a_character_that_is_not_ascii_or_a_control_character_is_not_used);
+  RUN_TEST(test_a_text_with_a_character_that_is_not_printable_ascii_is_not_used_in_any_field);
   RUN_TEST(test_the_commands_beyond_the_limit_are_counted_and_the_first_ones_are_kept);
   RUN_TEST(test_a_body_that_is_broken_is_refused);
   RUN_TEST(test_a_body_of_deep_nesting_or_of_a_huge_size_is_refused_without_a_crash);
@@ -386,6 +541,13 @@ int main() {
   RUN_TEST(test_an_error_body_gives_the_expected_number_and_the_wait);
   RUN_TEST(test_an_error_body_with_wrong_types_or_odd_content_gives_empty_fields);
   RUN_TEST(test_an_error_body_that_is_not_json_is_reported_and_leaves_empty_fields);
+  RUN_TEST(test_the_edges_of_the_sizes_of_the_buffers);
+  RUN_TEST(test_the_nesting_limit_has_an_exact_edge_for_arrays_and_for_objects);
+  RUN_TEST(test_a_repeated_key_and_a_repeated_id_are_handled);
+  RUN_TEST(test_an_error_body_with_a_code_and_a_list_of_fields_and_a_wait_of_zero);
+  RUN_TEST(test_a_long_answer_that_was_cut_is_read_as_far_as_it_goes);
+  RUN_TEST(test_a_cut_at_every_byte_keeps_only_whole_commands_and_needs_the_first_fields);
+  RUN_TEST(test_a_cut_body_with_wrong_bytes_before_the_cut_is_still_refused_and_the_keys_must_come_first);
   RUN_TEST(test_the_answer_of_the_enroll_route_is_read);
   RUN_TEST(test_an_enroll_answer_with_a_code_or_a_poll_id_that_the_hub_cannot_use_is_refused);
   return UNITY_END();

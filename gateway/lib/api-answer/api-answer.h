@@ -11,9 +11,11 @@ namespace wattlink {
 // Reads the answers of the backend to the hub. The contract is openapi.yaml of the backend (the routes under /device/v1) and its docs/firmware-guide.md.
 // The scanner has a fixed depth and a fixed size for every text, uses no heap and never reads past the length that it is given. An answer is data from the
 // network, so a text that is too long, a number out of range or a value of the wrong type makes the field invalid and never a crash. A key that the scanner does
-// not know is skipped, so a field that the backend adds later does not break the hub.
+// not know is skipped, so a field that the backend adds later does not break the hub. A text keeps only printable ASCII characters, so a control character or
+// a byte above 127 makes the field invalid, and nothing that the hub prints or shows can hold one.
 
-// The largest answer that the hub reads. The client reads at most this many bytes of a body, and an answer that is longer fails to parse and is retried.
+// The largest answer that the hub reads. The client reads at most this many bytes of a body. A longer answer of the readings route is read as far as
+// it goes, see parseReadingsAnswer. The scanners refuse a body that is longer than this.
 constexpr size_t kMaxAnswerBytes = 8192;
 
 // The commands that one answer can hand over. A command that does not fit comes again in the next answer, because the service repeats a command until
@@ -60,7 +62,12 @@ struct EnrollAnswer {
 
 // Each function returns false when the body is not a JSON object, when it is cut short or has bytes after the object, or when a field that the answer
 // needs is missing or invalid. The out value is then not to be used.
-bool parseReadingsAnswer(const char *body, size_t length, ReadingsAnswer *out);
+//
+// The answer of the readings route may be longer than the buffer of the hub when many commands wait. The client then gives the first bytes and sets truncated.
+// The answer is read as far as it goes and counts as good when ackSeq and serverTime came before the cut, which is the order of the backend, and the commands
+// that ended before the cut are kept (the rest comes again in the next answer). A cut in the middle of a value is the end of the body, and any other broken
+// byte is still a failure.
+bool parseReadingsAnswer(const char *body, size_t length, ReadingsAnswer *out, bool truncated = false);
 bool parseEnrollAnswer(const char *body, size_t length, EnrollAnswer *out);
 
 // An error body never makes the hub fail, because the status says what happened. The function fills what it can, and returns false only when the body is
