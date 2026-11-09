@@ -21,8 +21,8 @@ bool WifiClient::begin(uint32_t nowMs) {
   }
 
   WiFi.persistent(false);
-  WiFi.mode(WIFI_STA);
-  if (listener_ != nullptr) {
+  // The listener is told only when the radio really is in station mode, because ESP-NOW cannot start without it.
+  if (WiFi.mode(WIFI_STA) && listener_ != nullptr) {
     listener_->onRadioOn();
   }
   // The link is watched here, so the stack must not reconnect on its own. The modem sleep is off because the hub is powered from USB and

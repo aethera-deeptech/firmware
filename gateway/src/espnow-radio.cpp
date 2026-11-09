@@ -19,6 +19,10 @@ uint8_t queueStorage[kQueueDepth * sizeof(EspNowRadio::Received)];
 QueueHandle_t queue = nullptr;
 StaticSemaphore_t sendDoneControl;
 SemaphoreHandle_t sendDone = nullptr;
+// The send that waits for its report. The send callback gives the semaphore only for the node of that send, so a late report of an earlier send
+// that timed out cannot release the wait of the next one. Both are written by the sending task and read by the Wi-Fi task.
+volatile bool waiting = false;
+uint8_t waitingMac[kMacSize];
 // Each counter has one writer. The receive callback owns the first two and the send callback owns the third.
 volatile uint32_t callbackReceived = 0;
 volatile uint32_t callbackDropped = 0;
@@ -39,11 +43,13 @@ void onReceive(const uint8_t *mac, const uint8_t *data, int length) {
   }
 }
 
-void onSent(const uint8_t *, esp_now_send_status_t status) {
+void onSent(const uint8_t *mac, esp_now_send_status_t status) {
   if (status != ESP_NOW_SEND_SUCCESS) {
     callbackFailed = callbackFailed + 1;
   }
-  xSemaphoreGive(sendDone);
+  if (waiting && mac != nullptr && memcmp(mac, waitingMac, kMacSize) == 0) {
+    xSemaphoreGive(sendDone);
+  }
 }
 
 }  // namespace
@@ -70,6 +76,8 @@ bool EspNowRadio::begin() {
   }
   xQueueReset(queue);
   xSemaphoreTake(sendDone, 0);
+  waiting = false;
+  addErrorLogged_ = false;
   active_ = true;
   Serial.println("ESP-NOW: ready");
   return true;
@@ -114,19 +122,30 @@ bool EspNowRadio::send(const uint8_t mac[kMacSize], const uint8_t *frame, size_t
   peer.channel = 0;
   peer.ifidx = WIFI_IF_STA;
   peer.encrypt = false;
-  if (esp_now_add_peer(&peer) != ESP_OK) {
+  // A peer that is there already is not ours to remove, so it is used and left in place.
+  const esp_err_t added = esp_now_add_peer(&peer);
+  if (added != ESP_OK && added != ESP_ERR_ESPNOW_EXIST) {
+    if (!addErrorLogged_) {
+      addErrorLogged_ = true;
+      Serial.printf("ESP-NOW: add peer failed (%d)\n", static_cast<int>(added));
+    }
     return false;
   }
+  memcpy(waitingMac, mac, kMacSize);
   xSemaphoreTake(sendDone, 0);
+  waiting = true;
   const bool taken = esp_now_send(mac, frame, length) == ESP_OK;
   if (taken) {
     sent_++;
-    // The peer stays until the link layer has finished with the frame. A timeout is counted like a failed send.
+    // The peer stays until the link layer has finished with the frame, or until the wait is over.
     if (xSemaphoreTake(sendDone, kSendWaitTicks) != pdTRUE) {
       timeouts_++;
     }
   }
-  esp_now_del_peer(mac);
+  waiting = false;
+  if (added == ESP_OK) {
+    esp_now_del_peer(mac);
+  }
   return taken;
 }
 
@@ -139,7 +158,11 @@ uint32_t EspNowRadio::dropped() const {
 }
 
 uint32_t EspNowRadio::failed() const {
-  return callbackFailed + timeouts_;
+  return callbackFailed;
+}
+
+uint32_t EspNowRadio::timeouts() const {
+  return timeouts_;
 }
 
 }  // namespace wattlink

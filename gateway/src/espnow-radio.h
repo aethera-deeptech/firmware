@@ -38,19 +38,22 @@ class EspNowRadio : public RadioPort, public RadioListener {
   bool receive(Received *out);
 
   // Adds the node as a temporary peer, sends, waits for the link layer to report on the send and removes the peer. The wait is 50 ms at most.
-  // Returns true when the stack took the frame. A frame that the node did not acknowledge still returns true and is counted in failed().
+  // Returns true when the stack took the frame. A frame that the node did not acknowledge still returns true and is counted in failed(). A peer that exists already is used and left in place.
   bool send(const uint8_t mac[kMacSize], const uint8_t *frame, size_t length) override;
 
   // Counters since the start of the chip, for the log. dropped() counts frames that the callback threw away because the queue was full.
-  // failed() counts sends that the node did not acknowledge, and sends that the link layer did not report within the wait.
+  // failed() counts sends that the link layer reported as not acknowledged, and timeouts() counts sends with no report within the wait.
+  // A send that times out and is reported late counts in both.
   uint32_t received() const;
   uint32_t dropped() const;
   uint32_t sent() const { return sent_; }
   uint32_t failed() const;
+  uint32_t timeouts() const;
 
  private:
   bool active_ = false;
   uint32_t sent_ = 0;
+  bool addErrorLogged_ = false;  // one log line for each start when a peer cannot be added, so a flood of sends cannot flood the log
   uint32_t timeouts_ = 0;  // written by the sending task only, while the callback counters are written by the Wi-Fi task only
 };
 
