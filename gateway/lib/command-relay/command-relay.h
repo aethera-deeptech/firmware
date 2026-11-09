@@ -20,7 +20,8 @@ constexpr size_t kMaxQueuedCommands = 16;
 // record is free, or when the command is done and its result is no longer waiting for a batch. A new command is refused when no slot can be used.
 constexpr size_t kCommandLogSlots = kMaxNodes + kMaxQueuedCommands;
 constexpr uint32_t kNumberReserveSeconds = 600;
-// How many results wait for a batch at most. Every record of the log can have one, and the answers about unknown nodes have none in the log.
+// How many results wait for a batch at most. Every record of the log can have one, and the answers about unknown nodes have none in the log, so they
+// are held up to kMaxBatchResults. A new answer about an unknown node is refused with Full when that many wait, and nothing is ever pushed out.
 constexpr size_t kMaxHeldResults = kCommandLogSlots + kMaxBatchResults;
 // The hub sends a command again after this time, with the echo of the newest frame of the plug, until the plug answers or the command ends.
 constexpr uint32_t kCommandResendMs = 5000;
@@ -95,7 +96,7 @@ class CommandRelay {
   // dropResults with the number that it passed, so a result that came in meanwhile stays for the next batch. A batch takes kMaxBatchResults at most,
   // so resultCount() is never more than that and the rest waits. The relay holds a result for every record of the log at most, and a record whose result
   // waits is never reused. The results for commands of an unknown node have no record, and the list has room for kMaxBatchResults of them on top of the
-  // records, so a new result finds room and the entries that were passed never move.
+  // records, so a new result always finds room and the entries that were passed never move or leave before dropResults.
   size_t resultCount() const { return resultCount_ < kMaxBatchResults ? resultCount_ : kMaxBatchResults; }
   const RelayResult *results() const { return results_; }
   void dropResults(size_t count);
@@ -139,7 +140,9 @@ class CommandRelay {
   bool persist(const Pending &pending, CommandState state);
   void trySend(uint32_t nowMs, Pending *pending);
   void finish(Pending *pending, bool ok);
-  void pushResult(const char *id, bool ok);
+  bool pushResult(const char *id, bool ok, bool unknownNode);
+  size_t usableLogSlots() const;
+  size_t unpersistedExcept(const uint8_t mac[kMacSize]) const;
 
   CommandSender &sender_;
   const NodeRegistry &registry_;
@@ -150,7 +153,9 @@ class CommandRelay {
   Pending pending_[kMaxQueuedCommands];
   CommandRecord records_[kCommandLogSlots];
   RelayResult results_[kMaxHeldResults];
+  bool unknown_[kMaxHeldResults];  // the result is the answer about an unknown node, which has no record in the log
   size_t resultCount_;
+  size_t unknownCount_;
 };
 
 }  // namespace wattlink

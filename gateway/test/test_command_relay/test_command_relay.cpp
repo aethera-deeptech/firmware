@@ -608,6 +608,78 @@ void test_a_number_stays_reserved_after_its_command_ended_and_the_number_zero_is
   TEST_ASSERT_EQUAL_UINT16(0x0001, zero.sender.calls[0].number);
 }
 
+void test_the_last_free_log_slot_is_promised_to_one_queued_command_only() {
+  Rig rig;
+  char first[kNodeIdSize];
+  char second[kNodeIdSize];
+  pairPlug(rig, 1, first);
+  pairPlug(rig, 2, second);
+  // All slots but one hold the record of a command that was sent before a restart, and those are never reused.
+  for (size_t i = 0; i + 1 < kCommandLogSlots; i++) {
+    CommandRecord record = {};
+    snprintf(record.id, sizeof(record.id), "sent-%u", static_cast<unsigned>(i));
+    record.number = static_cast<uint16_t>(0x0A00 + i + 1);
+    record.state = CommandState::Sent;
+    record.expiresAt = kServerTime + 100;
+    rig.log.slots[i] = record;
+    rig.log.present[i] = true;
+  }
+  TEST_ASSERT_EQUAL_UINT(kCommandLogSlots - 1, rig.relay.load());
+  TEST_ASSERT_EQUAL_INT(result(SubmitResult::Queued), result(submit(rig, 0, "new-1", first)));
+  // The one free slot is taken by the first command in advance, so a second command for another plug is refused now and not silently held back later.
+  TEST_ASSERT_EQUAL_INT(result(SubmitResult::Full), result(submit(rig, 0, "new-2", second)));
+  // A newer command for the same plug takes the place of the first one, so it needs no second slot.
+  TEST_ASSERT_EQUAL_INT(result(SubmitResult::Queued), result(submit(rig, 0, "new-3", first)));
+  rig.relay.onEvent(10, telemetry(1, 1));
+  TEST_ASSERT_EQUAL_UINT(1, rig.sender.count);
+  TEST_ASSERT_EQUAL_UINT32(0, rig.relay.logFailures());
+}
+
+void test_an_unknown_node_with_no_id_does_not_turn_a_result_of_a_command_that_ran_into_a_failure() {
+  Rig rig;
+  char plug[kNodeIdSize];
+  pairPlug(rig, 1, plug);
+  finishCommand(rig, 1, "ran-1", kExpires, 10);
+  TEST_ASSERT_EQUAL_UINT(1, rig.relay.resultCount());
+  TEST_ASSERT_TRUE(rig.relay.results()[0].ok);
+  TEST_ASSERT_EQUAL_INT(result(SubmitResult::AlreadyRan), result(submit(rig, 0, "ran-1", nullptr)));
+  TEST_ASSERT_TRUE(rig.relay.results()[0].ok);
+  // A command that is queued stays queued, and no failure is reported for it.
+  TEST_ASSERT_EQUAL_INT(result(SubmitResult::Queued), result(submit(rig, 0, "wait-1", plug)));
+  TEST_ASSERT_EQUAL_INT(result(SubmitResult::Duplicate), result(submit(rig, 0, "wait-1", nullptr)));
+  TEST_ASSERT_EQUAL_UINT(1, rig.relay.resultCount());
+  TEST_ASSERT_EQUAL_UINT(1, rig.relay.pendingCount());
+}
+
+void test_answers_about_unknown_nodes_are_capped_and_never_push_out_a_result_that_a_batch_took() {
+  Rig rig;
+  char plug[kNodeIdSize];
+  pairPlug(rig, 1, plug);
+  for (size_t i = 0; i < kMaxBatchResults; i++) {
+    char id[16];
+    snprintf(id, sizeof(id), "u%u", static_cast<unsigned>(i));
+    TEST_ASSERT_EQUAL_INT(result(SubmitResult::UnknownNode), result(submit(rig, 0, id, "PLUG-FFFFFF")));
+  }
+  TEST_ASSERT_EQUAL_UINT(kMaxBatchResults, rig.relay.resultCount());
+  // The share is used, so a new one is refused and the batch that took the first 64 still sees the same entries.
+  TEST_ASSERT_EQUAL_INT(result(SubmitResult::Full), result(submit(rig, 0, "u-more", "PLUG-FFFFFF")));
+  TEST_ASSERT_EQUAL_STRING("u0", rig.relay.results()[0].id);
+  TEST_ASSERT_EQUAL_STRING("u63", rig.relay.results()[kMaxBatchResults - 1].id);
+  // The results of commands that ran still find room on top of that share, as many as the log has records.
+  for (size_t i = 0; i < kCommandLogSlots; i++) {
+    char id[16];
+    snprintf(id, sizeof(id), "r%u", static_cast<unsigned>(i));
+    finishCommand(rig, 1, id, kExpires + i, 10 + i);
+  }
+  TEST_ASSERT_EQUAL_STRING("u0", rig.relay.results()[0].id);
+  rig.relay.dropResults(kMaxBatchResults);
+  // The share of unknown nodes is free again, and the results of the commands that ran are the first ones now.
+  TEST_ASSERT_EQUAL_STRING("r0", rig.relay.results()[0].id);
+  TEST_ASSERT_EQUAL_INT(result(SubmitResult::UnknownNode), result(submit(rig, 0, "u-more", "PLUG-FFFFFF")));
+  rig.relay.dropResults(1000);
+  TEST_ASSERT_EQUAL_UINT(0, rig.relay.resultCount());
+}
+
 void test_a_command_whose_life_is_over_is_not_sent_when_a_frame_comes_before_update() {
   Rig rig;
   char plug[kNodeIdSize];
@@ -697,6 +769,9 @@ int main() {
   RUN_TEST(test_a_full_log_refuses_a_new_command_until_the_results_of_finished_ones_are_passed_on);
   RUN_TEST(test_records_of_commands_that_were_sent_before_a_restart_are_never_reused_for_a_new_command);
   RUN_TEST(test_a_number_stays_reserved_after_its_command_ended_and_the_number_zero_is_never_used);
+  RUN_TEST(test_the_last_free_log_slot_is_promised_to_one_queued_command_only);
+  RUN_TEST(test_an_unknown_node_with_no_id_does_not_turn_a_result_of_a_command_that_ran_into_a_failure);
+  RUN_TEST(test_answers_about_unknown_nodes_are_capped_and_never_push_out_a_result_that_a_batch_took);
   RUN_TEST(test_a_command_whose_life_is_over_is_not_sent_when_a_frame_comes_before_update);
   RUN_TEST(test_a_command_is_not_sent_to_a_node_that_was_removed_and_forget_ends_it_for_a_pairing_that_comes_back);
   RUN_TEST(test_resends_stop_when_the_newest_frame_is_too_old_and_start_again_with_the_next_frame);

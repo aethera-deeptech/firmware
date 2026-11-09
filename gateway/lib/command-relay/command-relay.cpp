@@ -18,10 +18,11 @@ bool reached(uint32_t nowMs, uint32_t targetMs) {
 }  // namespace
 
 CommandRelay::CommandRelay(CommandSender &sender, const NodeRegistry &registry, CommandLog &log, uint32_t hubBootId)
-    : sender_(sender), registry_(registry), log_(log), hubBootId_(hubBootId), nextSeq_(0), logFailures_(0), resultCount_(0) {
+    : sender_(sender), registry_(registry), log_(log), hubBootId_(hubBootId), nextSeq_(0), logFailures_(0), resultCount_(0), unknownCount_(0) {
   memset(pending_, 0, sizeof(pending_));
   memset(records_, 0, sizeof(records_));
   memset(results_, 0, sizeof(results_));
+  memset(unknown_, 0, sizeof(unknown_));
 }
 
 size_t CommandRelay::load() {
@@ -66,6 +67,29 @@ bool CommandRelay::resultWaiting(const char *id) const {
     }
   }
   return false;
+}
+
+size_t CommandRelay::usableLogSlots() const {
+  size_t usable = 0;
+  for (size_t i = 0; i < kCommandLogSlots; i++) {
+    const bool finished = records_[i].state == CommandState::Done || records_[i].state == CommandState::Failed;
+    if (records_[i].state == CommandState::Free ||
+        (finished && findPending(records_[i].id) < 0 && !resultWaiting(records_[i].id))) {
+      usable++;
+    }
+  }
+  return usable;
+}
+
+// The queued commands that still need a slot for their record, not counting the one that a new command for the same plug would replace.
+size_t CommandRelay::unpersistedExcept(const uint8_t mac[kMacSize]) const {
+  size_t count = 0;
+  for (size_t i = 0; i < kMaxQueuedCommands; i++) {
+    if (pending_[i].used && !pending_[i].persisted && !sameMac(pending_[i].mac, mac)) {
+      count++;
+    }
+  }
+  return count;
 }
 
 int CommandRelay::pickLogSlot() const {
@@ -122,6 +146,8 @@ bool CommandRelay::persist(const Pending &pending, CommandState state) {
     slot = pickLogSlot();
   }
   if (slot < 0) {
+    // submit() counts the slots, so this is not expected. It is counted so that it shows in the log if it ever happens.
+    logFailures_++;
     return false;
   }
   CommandRecord record;
@@ -142,10 +168,6 @@ SubmitResult CommandRelay::submit(uint32_t nowMs, uint32_t serverTime, const cha
   if (id == nullptr || !isSafeResultId(id)) {
     return SubmitResult::BadId;
   }
-  if (nodeId == nullptr) {
-    pushResult(id, false);
-    return SubmitResult::UnknownNode;
-  }
   forgetEnded(serverTime);
   if (expiresAt <= serverTime) {
     return SubmitResult::Expired;
@@ -160,14 +182,18 @@ SubmitResult CommandRelay::submit(uint32_t nowMs, uint32_t serverTime, const cha
 
   const int logged = findLog(id);
   if (logged >= 0 && records_[logged].state != CommandState::Sent) {
-    pushResult(id, records_[logged].state == CommandState::Done);
+    pushResult(id, records_[logged].state == CommandState::Done, false);
     return SubmitResult::AlreadyRan;
   }
 
   uint8_t mac[kMacSize];
-  if (!registry_.macOf(nodeId, mac)) {
+  if (nodeId == nullptr || !registry_.macOf(nodeId, mac)) {
     // The plug is not known here, so the command cannot run. The backend lists it until it gets a result or the life ends, and a failed result closes it.
-    pushResult(id, false);
+    // This comes after the checks of the queue and of the log, so the result of a command that ran is never turned into a failure. When the list of
+    // such results is full the command is refused, and the backend sends it again.
+    if (!pushResult(id, false, true)) {
+      return SubmitResult::Full;
+    }
     return SubmitResult::UnknownNode;
   }
 
@@ -191,8 +217,9 @@ SubmitResult CommandRelay::submit(uint32_t nowMs, uint32_t serverTime, const cha
   uint16_t number = 0;
   if (logged >= 0) {
     number = records_[logged].number;
-  } else if (pickLogSlot() < 0 || !allocateNumber(&number)) {
-    // No record could be kept for the command, so it would have to be sent without one. The backend sends it again when room is free.
+  } else if (usableLogSlots() <= unpersistedExcept(mac) || !allocateNumber(&number)) {
+    // No record could be kept for the command, because the slots that can be used are promised to the commands that wait already. The backend sends it
+    // again when room is free.
     return SubmitResult::Full;
   }
 
@@ -234,35 +261,46 @@ void CommandRelay::trySend(uint32_t nowMs, Pending *pending) {
 
 void CommandRelay::finish(Pending *pending, bool ok) {
   persist(*pending, ok ? CommandState::Done : CommandState::Failed);
-  pushResult(pending->id, ok);
+  pushResult(pending->id, ok, false);
   memset(pending, 0, sizeof(*pending));
 }
 
-void CommandRelay::pushResult(const char *id, bool ok) {
+bool CommandRelay::pushResult(const char *id, bool ok, bool unknownNode) {
   for (size_t i = 0; i < resultCount_; i++) {
     if (strncmp(results_[i].id, id, kResultIdSize) == 0) {
       results_[i].ok = ok;
-      return;
+      return true;
     }
   }
-  // A result is held for a record of the log at most, and the slot of a record whose result waits is not reused, so the list is never full here.
-  // The test is a guard that keeps the array safe if that ever stops being true.
-  if (resultCount_ == kMaxHeldResults) {
-    memmove(&results_[0], &results_[1], (kMaxHeldResults - 1) * sizeof(results_[0]));
-    resultCount_--;
+  // The list has room for a result of every record and kMaxBatchResults answers about unknown nodes, and the slot of a record whose result waits is not
+  // reused. So a result of a command that ran always finds room, and an answer about an unknown node is refused when its share is used. Nothing is
+  // moved or pushed out, because a batch may have taken the first entries and waits for dropResults.
+  if (resultCount_ == kMaxHeldResults || (unknownNode && unknownCount_ >= kMaxBatchResults)) {
+    return false;
   }
-  RelayResult &entry = results_[resultCount_++];
+  RelayResult &entry = results_[resultCount_];
   memset(&entry, 0, sizeof(entry));
   memcpy(entry.id, id, strnlen(id, kResultIdSize - 1));
   entry.ok = ok;
+  unknown_[resultCount_] = unknownNode;
+  resultCount_++;
+  if (unknownNode) {
+    unknownCount_++;
+  }
+  return true;
 }
 
 void CommandRelay::dropResults(size_t count) {
-  if (count >= resultCount_) {
-    resultCount_ = 0;
-    return;
+  if (count > resultCount_) {
+    count = resultCount_;
+  }
+  for (size_t i = 0; i < count; i++) {
+    if (unknown_[i] && unknownCount_ > 0) {
+      unknownCount_--;
+    }
   }
   memmove(&results_[0], &results_[count], (resultCount_ - count) * sizeof(results_[0]));
+  memmove(&unknown_[0], &unknown_[count], (resultCount_ - count) * sizeof(unknown_[0]));
   resultCount_ -= count;
 }
 
