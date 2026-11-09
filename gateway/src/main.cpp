@@ -1,11 +1,13 @@
 #include <Arduino.h>
 
+#include "boot-counter.h"
 #include "config.h"
 #include "crypto-selftest.h"
 #include "hub-button.h"
 #include "hub-link.h"
 #include "hub-pairing.h"
 #include "node-registry.h"
+#include "nvs-counter-store.h"
 #include "nvs-record-store.h"
 #include "nvs-store.h"
 #include "oled.h"
@@ -22,6 +24,10 @@ static wattlink::NvsKeyValueStore flash;
 static wattlink::SettingsStore settings(flash);
 static wattlink::NvsRecordStore nodeFlash;
 static wattlink::NodeRegistry nodes(nodeFlash);
+static wattlink::NvsCounterStore counterFlash;
+static wattlink::BootCounter bootCounter(counterFlash);
+// The boot number of this start. It is 0 until it is made, and the hub must not send a frame or pair with a number of 0.
+static uint32_t hubBootId = 0;
 
 // The registry keeps the kind as a plain byte, and this ties it to the kinds of the frames.
 static_assert(static_cast<uint8_t>(wattlink::NodeKind::Plug) == wattlink::kKindPlug, "the plug kind of the registry matches the frames");
@@ -98,6 +104,17 @@ void setup() {
   nodes.load();
   Serial.printf("Nodes: %u paired, %u of %u ids used, %u damaged\n", static_cast<unsigned>(nodes.pairedCount()),
                 static_cast<unsigned>(nodes.idCount()), static_cast<unsigned>(wattlink::kMaxNodes), static_cast<unsigned>(nodes.damagedCount()));
+  // The boot number is written to flash and read back before any frame is sent. A first start while nodes are paired means that the counter was
+  // lost and the keys were not, so numbers could repeat with the old keys, and the hub then stays without a number like after a failure.
+  const wattlink::BootResult boot = bootCounter.next(&hubBootId);
+  if (boot == wattlink::BootResult::First && nodes.pairedCount() > 0) {
+    hubBootId = 0;
+  }
+  if (hubBootId != 0) {
+    Serial.printf("Hub boot number: %lu\n", static_cast<unsigned long>(hubBootId));
+  } else {
+    Serial.println("Hub boot number: FAILED, the hub does not pair");
+  }
   // The known answers of the host tests, run through the mbedTLS of the chip.
   const uint32_t selfTestStart = millis();
   cryptoResult = wattlink::runCryptoSelfTest();
@@ -132,6 +149,10 @@ void loop() {
       // A chip whose crypto disagrees with the host tests must not pair. A result that has not been set counts as failed.
       if (cryptoResult != wattlink::SelfTestResult::Ok) {
         Serial.println("Pairing: refused, the crypto self test did not pass");
+        break;
+      }
+      if (hubBootId == 0) {
+        Serial.println("Pairing: refused, the hub has no boot number");
         break;
       }
       switch (pairing.press(now)) {
