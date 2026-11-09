@@ -1,0 +1,392 @@
+#include <string.h>
+#include <unity.h>
+
+#include <string>
+
+#include "api-answer.h"
+
+using namespace wattlink;
+
+namespace {
+
+const char kPoll[] = "0123456789abcdef0123456789abcdef";
+
+bool readings(const std::string &body, ReadingsAnswer *out) { return parseReadingsAnswer(body.data(), body.size(), out); }
+bool enroll(const std::string &body, EnrollAnswer *out) { return parseEnrollAnswer(body.data(), body.size(), out); }
+bool failure(const std::string &body, ErrorAnswer *out) { return parseErrorAnswer(body.data(), body.size(), out); }
+
+std::string command(const char *id, const char *node, const char *action, const char *expires) {
+  return std::string("{\"id\":\"") + id + "\",\"nodeId\":\"" + node + "\",\"action\":\"" + action + "\",\"expiresAt\":\"" + expires + "\"}";
+}
+
+std::string answer(const std::string &commands) {
+  return "{\"ackSeq\":41,\"serverTime\":\"2026-11-03T08:01:02Z\",\"accepted\":1,\"rejected\":0,\"commands\":[" + commands + "]}";
+}
+
+uint32_t timeOf(const char *text) {
+  uint32_t value = 0;
+  TEST_ASSERT_TRUE(parseIsoTime(text, &value));
+  return value;
+}
+
+bool badTime(const char *text) {
+  uint32_t value = 77;
+  return !parseIsoTime(text, &value);
+}
+
+void test_the_time_of_the_service_is_read_in_unix_seconds() {
+  TEST_ASSERT_EQUAL_UINT32(1793692862u, timeOf("2026-11-03T08:01:02Z"));
+  TEST_ASSERT_EQUAL_UINT32(1700000000u, timeOf("2023-11-14T22:13:20Z"));
+  TEST_ASSERT_EQUAL_UINT32(0u, timeOf("1970-01-01T00:00:00Z"));
+  TEST_ASSERT_EQUAL_UINT32(1709164800u, timeOf("2024-02-29T00:00:00Z"));
+}
+
+void test_an_offset_and_a_fraction_of_a_second_are_read() {
+  // The same moment in the time zone of the business, seven hours ahead of UTC.
+  TEST_ASSERT_EQUAL_UINT32(1793692862u, timeOf("2026-11-03T15:01:02+07:00"));
+  TEST_ASSERT_EQUAL_UINT32(1793692862u, timeOf("2026-11-03T01:01:02-07:00"));
+  TEST_ASSERT_EQUAL_UINT32(1793692862u, timeOf("2026-11-03T08:01:02.123456Z"));
+  TEST_ASSERT_EQUAL_UINT32(1793692862u, timeOf("2026-11-03T13:31:02+05:30"));
+  // An offset that moves the time over the end of the day.
+  TEST_ASSERT_EQUAL_UINT32(1793692862u, timeOf("2026-11-04T03:01:02+19:00"));
+}
+
+void test_a_time_that_does_not_exist_or_is_not_the_form_is_refused() {
+  TEST_ASSERT_TRUE(badTime(""));
+  TEST_ASSERT_TRUE(badTime("2026-11-03"));
+  TEST_ASSERT_TRUE(badTime("2026-11-03 08:01:02Z"));
+  TEST_ASSERT_TRUE(badTime("2026-11-03T08:01:02"));
+  TEST_ASSERT_TRUE(badTime("2026-11-03T08:01:02z"));
+  TEST_ASSERT_TRUE(badTime("2026-11-03T08:01:02Z "));
+  TEST_ASSERT_TRUE(badTime("2026-11-03T08:01:02.Z"));
+  TEST_ASSERT_TRUE(badTime("2026-11-03T08:01:02+0700"));
+  TEST_ASSERT_TRUE(badTime("2026-11-03T08:01:02+24:00"));
+  TEST_ASSERT_TRUE(badTime("2026-11-03T08:01:02+07:60"));
+  TEST_ASSERT_TRUE(badTime("2026-13-03T08:01:02Z"));
+  TEST_ASSERT_TRUE(badTime("2026-00-03T08:01:02Z"));
+  TEST_ASSERT_TRUE(badTime("2026-11-31T08:01:02Z"));
+  TEST_ASSERT_TRUE(badTime("2026-02-29T08:01:02Z"));
+  TEST_ASSERT_TRUE(badTime("2100-02-29T08:01:02Z"));
+  TEST_ASSERT_TRUE(badTime("2026-11-03T24:01:02Z"));
+  TEST_ASSERT_TRUE(badTime("2026-11-03T08:60:02Z"));
+  TEST_ASSERT_TRUE(badTime("2026-11-03T08:01:60Z"));
+  TEST_ASSERT_TRUE(badTime("2026-1a-03T08:01:02Z"));
+  TEST_ASSERT_TRUE(badTime("+2026-11-03T08:01:02Z"));
+  uint32_t value = 0;
+  TEST_ASSERT_FALSE(parseIsoTime(nullptr, &value));
+}
+
+void test_a_time_outside_the_range_of_32_bits_is_refused_and_the_edges_are_read() {
+  TEST_ASSERT_EQUAL_UINT32(4294967295u, timeOf("2106-02-07T06:28:15Z"));
+  TEST_ASSERT_TRUE(badTime("2106-02-07T06:28:16Z"));
+  TEST_ASSERT_TRUE(badTime("1969-12-31T23:59:59Z"));
+  TEST_ASSERT_TRUE(badTime("0000-01-01T00:00:00Z"));
+  TEST_ASSERT_TRUE(badTime("9999-12-31T23:59:59Z"));
+  // The offset can move a time before 1970 over the edge too.
+  TEST_ASSERT_TRUE(badTime("1970-01-01T00:00:00+01:00"));
+  TEST_ASSERT_EQUAL_UINT32(0u, timeOf("1970-01-01T01:00:00+01:00"));
+  TEST_ASSERT_TRUE(badTime("2106-02-07T06:28:15-00:01"));
+}
+
+void test_a_good_answer_of_the_readings_route_is_read() {
+  ReadingsAnswer a;
+  TEST_ASSERT_TRUE(readings(answer(""), &a));
+  TEST_ASSERT_EQUAL_UINT32(41, a.ackSeq);
+  TEST_ASSERT_EQUAL_UINT32(1793692862u, a.serverTime);
+  TEST_ASSERT_EQUAL_UINT(0, a.commandCount);
+  TEST_ASSERT_EQUAL_UINT(0, a.badCommands);
+}
+
+void test_the_commands_of_an_answer_are_read_in_order() {
+  ReadingsAnswer a;
+  const std::string body =
+      answer(command("6f1c7e0a-0000-4000-8000-000000000001", "PLUG-0001", "off", "2026-11-03T08:11:02Z") + "," +
+             command("6f1c7e0a-0000-4000-8000-000000000002", "PLUG-0002", "on", "2026-11-03T15:11:02+07:00"));
+  TEST_ASSERT_TRUE(readings(body, &a));
+  TEST_ASSERT_EQUAL_UINT(2, a.commandCount);
+  TEST_ASSERT_EQUAL_STRING("6f1c7e0a-0000-4000-8000-000000000001", a.commands[0].id);
+  TEST_ASSERT_EQUAL_STRING("PLUG-0001", a.commands[0].nodeId);
+  TEST_ASSERT_FALSE(a.commands[0].on);
+  TEST_ASSERT_EQUAL_UINT32(1793693462u, a.commands[0].expiresAt);
+  TEST_ASSERT_EQUAL_STRING("6f1c7e0a-0000-4000-8000-000000000002", a.commands[1].id);
+  TEST_ASSERT_TRUE(a.commands[1].on);
+  TEST_ASSERT_EQUAL_UINT32(1793693462u, a.commands[1].expiresAt);
+}
+
+void test_the_order_of_the_keys_white_space_and_unknown_keys_do_not_matter() {
+  ReadingsAnswer a;
+  const std::string body =
+      " \n{ \"extra\" : {\"deep\":[1,2.5e3,-4,true,false,null,\"x\",{\"a\":[]}]},\n \"commands\" : [ { \"expiresAt\":\"2026-11-03T08:11:02Z\", \"x\":1,"
+      "\"action\":\"on\",\"nodeId\":\"PLUG-0001\",\"id\":\"abc-1\" } ],\"serverTime\":\"2026-11-03T08:01:02Z\",\"ackSeq\":7,\"accepted\":0,\"rejected\":0 } \r\n";
+  TEST_ASSERT_TRUE(readings(body, &a));
+  TEST_ASSERT_EQUAL_UINT32(7, a.ackSeq);
+  TEST_ASSERT_EQUAL_UINT(1, a.commandCount);
+  TEST_ASSERT_EQUAL_STRING("abc-1", a.commands[0].id);
+}
+
+void test_an_answer_without_a_list_of_commands_has_none() {
+  ReadingsAnswer a;
+  TEST_ASSERT_TRUE(readings("{\"ackSeq\":1,\"serverTime\":\"2026-11-03T08:01:02Z\"}", &a));
+  TEST_ASSERT_EQUAL_UINT(0, a.commandCount);
+  TEST_ASSERT_TRUE(readings("{\"ackSeq\":1,\"serverTime\":\"2026-11-03T08:01:02Z\",\"commands\":null}", &a));
+  TEST_ASSERT_EQUAL_UINT(0, a.commandCount);
+  TEST_ASSERT_TRUE(readings("{\"ackSeq\":1,\"serverTime\":\"2026-11-03T08:01:02Z\",\"commands\":{\"a\":1}}", &a));
+  TEST_ASSERT_EQUAL_UINT(0, a.commandCount);
+}
+
+void test_an_answer_needs_the_number_and_the_time_of_the_service() {
+  ReadingsAnswer a;
+  TEST_ASSERT_FALSE(readings("{\"serverTime\":\"2026-11-03T08:01:02Z\",\"commands\":[]}", &a));
+  TEST_ASSERT_FALSE(readings("{\"ackSeq\":1,\"commands\":[]}", &a));
+  TEST_ASSERT_FALSE(readings("{\"ackSeq\":1,\"serverTime\":\"yesterday\"}", &a));
+  TEST_ASSERT_FALSE(readings("{\"ackSeq\":1,\"serverTime\":1793692862}", &a));
+  TEST_ASSERT_FALSE(readings("{\"ackSeq\":\"1\",\"serverTime\":\"2026-11-03T08:01:02Z\"}", &a));
+  TEST_ASSERT_FALSE(readings("{\"ackSeq\":-1,\"serverTime\":\"2026-11-03T08:01:02Z\"}", &a));
+  TEST_ASSERT_FALSE(readings("{\"ackSeq\":1.5,\"serverTime\":\"2026-11-03T08:01:02Z\"}", &a));
+  TEST_ASSERT_FALSE(readings("{\"ackSeq\":1e2,\"serverTime\":\"2026-11-03T08:01:02Z\"}", &a));
+  TEST_ASSERT_FALSE(readings("{\"ackSeq\":4294967296,\"serverTime\":\"2026-11-03T08:01:02Z\"}", &a));
+  TEST_ASSERT_FALSE(readings("{\"ackSeq\":99999999999999999999999,\"serverTime\":\"2026-11-03T08:01:02Z\"}", &a));
+  TEST_ASSERT_TRUE(readings("{\"ackSeq\":4294967295,\"serverTime\":\"2026-11-03T08:01:02Z\"}", &a));
+  TEST_ASSERT_EQUAL_UINT32(4294967295u, a.ackSeq);
+  // A failed read leaves nothing to use.
+  TEST_ASSERT_FALSE(readings("{\"ackSeq\":1,\"commands\":[]}", &a));
+  TEST_ASSERT_EQUAL_UINT32(0, a.ackSeq);
+  TEST_ASSERT_EQUAL_UINT(0, a.commandCount);
+}
+
+void test_a_key_that_comes_twice_is_taken_from_its_last_value() {
+  ReadingsAnswer a;
+  TEST_ASSERT_TRUE(readings("{\"ackSeq\":1,\"ackSeq\":2,\"serverTime\":\"2026-11-03T08:01:02Z\"}", &a));
+  TEST_ASSERT_EQUAL_UINT32(2, a.ackSeq);
+  TEST_ASSERT_FALSE(readings("{\"ackSeq\":1,\"ackSeq\":\"x\",\"serverTime\":\"2026-11-03T08:01:02Z\"}", &a));
+}
+
+void test_a_command_that_cannot_be_run_is_counted_and_left_out_and_the_rest_stay() {
+  ReadingsAnswer a;
+  const std::string good = command("good-1", "PLUG-0001", "on", "2026-11-03T08:11:02Z");
+  const std::string body = answer(
+      command("bad id", "PLUG-0001", "on", "2026-11-03T08:11:02Z") + "," +                       // a space in the id
+      command("", "PLUG-0001", "on", "2026-11-03T08:11:02Z") + "," +                             // no id
+      command("0123456789012345678901234567890123456", "PLUG-0001", "on", "2026-11-03T08:11:02Z") + "," +  // 37 characters
+      command("id-4", "", "on", "2026-11-03T08:11:02Z") + "," +                                  // no node
+      command("id-5", "ABCDEFGHIJKLM", "on", "2026-11-03T08:11:02Z") + "," +                     // a node id of 13 characters
+      command("id-6", "PLUG-0001", "toggle", "2026-11-03T08:11:02Z") + "," +                     // an action that is not on or off
+      command("id-7", "PLUG-0001", "ON", "2026-11-03T08:11:02Z") + "," +
+      command("id-8", "PLUG-0001", "on", "soon") + "," +                                         // a time that is not a time
+      "{\"id\":\"id-9\",\"nodeId\":\"PLUG-0001\",\"action\":\"on\"}," +                           // no expiry
+      "{\"id\":5,\"nodeId\":\"PLUG-0001\",\"action\":\"on\",\"expiresAt\":\"2026-11-03T08:11:02Z\"}," +
+      "\"text\",7,null,[]," + good);
+  TEST_ASSERT_TRUE(readings(body, &a));
+  TEST_ASSERT_EQUAL_UINT(1, a.commandCount);
+  TEST_ASSERT_EQUAL_STRING("good-1", a.commands[0].id);
+  TEST_ASSERT_EQUAL_UINT(14, a.badCommands);
+}
+
+void test_a_node_id_of_12_characters_fits_and_a_text_with_an_escape_is_read_as_its_characters() {
+  ReadingsAnswer a;
+  TEST_ASSERT_TRUE(readings(answer("{\"id\":\"id\\u002d1\",\"nodeId\":\"ABCDEFGHIJKL\",\"action\":\"o\\u006e\",\"expiresAt\":\"2026-11-03T08:11:02Z\"}"), &a));
+  TEST_ASSERT_EQUAL_UINT(1, a.commandCount);
+  TEST_ASSERT_EQUAL_STRING("id-1", a.commands[0].id);
+  TEST_ASSERT_EQUAL_STRING("ABCDEFGHIJKL", a.commands[0].nodeId);
+  TEST_ASSERT_TRUE(a.commands[0].on);
+}
+
+void test_a_text_with_a_character_that_is_not_ascii_or_a_control_character_is_not_used() {
+  ReadingsAnswer a;
+  // An id with a character above ASCII is not safe, so the command is left out and the answer is still read.
+  TEST_ASSERT_TRUE(readings(answer("{\"id\":\"id\\u00e9\",\"nodeId\":\"PLUG-0001\",\"action\":\"on\",\"expiresAt\":\"2026-11-03T08:11:02Z\"}"), &a));
+  TEST_ASSERT_EQUAL_UINT(0, a.commandCount);
+  TEST_ASSERT_EQUAL_UINT(1, a.badCommands);
+  // A zero character in a text is not kept.
+  TEST_ASSERT_TRUE(readings(answer("{\"id\":\"id\\u0000x\",\"nodeId\":\"PLUG-0001\",\"action\":\"on\",\"expiresAt\":\"2026-11-03T08:11:02Z\"}"), &a));
+  TEST_ASSERT_EQUAL_UINT(0, a.commandCount);
+  // A raw line feed inside a string is not valid JSON.
+  TEST_ASSERT_FALSE(readings("{\"ackSeq\":1,\"serverTime\":\"2026-11-03T08:01:02Z\",\"x\":\"a\nb\"}", &a));
+}
+
+void test_the_commands_beyond_the_limit_are_counted_and_the_first_ones_are_kept() {
+  ReadingsAnswer a;
+  std::string commands;
+  for (size_t i = 0; i < kMaxAnswerCommands + 5; i++) {
+    if (i > 0) {
+      commands += ",";
+    }
+    commands += command(("id-" + std::to_string(i)).c_str(), "PLUG-0001", "on", "2026-11-03T08:11:02Z");
+  }
+  TEST_ASSERT_TRUE(readings(answer(commands), &a));
+  TEST_ASSERT_EQUAL_UINT(kMaxAnswerCommands, a.commandCount);
+  TEST_ASSERT_EQUAL_UINT(5, a.extraCommands);
+  TEST_ASSERT_EQUAL_STRING("id-0", a.commands[0].id);
+  TEST_ASSERT_EQUAL_STRING("id-23", a.commands[kMaxAnswerCommands - 1].id);
+}
+
+void test_a_body_that_is_broken_is_refused() {
+  ReadingsAnswer a;
+  const std::string good = answer(command("id-1", "PLUG-0001", "on", "2026-11-03T08:11:02Z"));
+  TEST_ASSERT_TRUE(readings(good, &a));
+  // Every shorter body is cut in the middle of the JSON, so none of them is read.
+  for (size_t length = 0; length < good.size(); length++) {
+    TEST_ASSERT_FALSE(parseReadingsAnswer(good.data(), length, &a));
+  }
+  TEST_ASSERT_FALSE(readings(good + "x", &a));
+  TEST_ASSERT_FALSE(readings(good + "{}", &a));
+  TEST_ASSERT_TRUE(readings(good + "  \n", &a));
+  TEST_ASSERT_FALSE(readings("[]", &a));
+  TEST_ASSERT_FALSE(readings("\"text\"", &a));
+  TEST_ASSERT_FALSE(readings("<html>502</html>", &a));
+  TEST_ASSERT_FALSE(readings("{\"ackSeq\":1,\"serverTime\":\"2026-11-03T08:01:02Z\",}", &a));
+  TEST_ASSERT_FALSE(readings("{\"ackSeq\":01,\"serverTime\":\"2026-11-03T08:01:02Z\"}", &a));
+  TEST_ASSERT_FALSE(readings("{\"ackSeq\":1,\"serverTime\":\"2026-11-03T08:01:02Z\",\"x\":tru}", &a));
+  TEST_ASSERT_FALSE(readings("{\"ackSeq\":1,\"serverTime\":\"2026-11-03T08:01:02Z\",\"x\":\"\\q\"}", &a));
+  TEST_ASSERT_FALSE(readings("{\"ackSeq\":1,\"serverTime\":\"2026-11-03T08:01:02Z\",\"x\":\"\\u12\"}", &a));
+  TEST_ASSERT_FALSE(readings("{\"ackSeq\":1,\"serverTime\":\"2026-11-03T08:01:02Z\",\"x\":-}", &a));
+  TEST_ASSERT_FALSE(readings("{\"ackSeq\":1,\"serverTime\":\"2026-11-03T08:01:02Z\",\"x\":1.}", &a));
+  TEST_ASSERT_FALSE(readings("{\"ackSeq\":1,\"serverTime\":\"2026-11-03T08:01:02Z\",\"x\":1e}", &a));
+  TEST_ASSERT_FALSE(readings("", &a));
+  TEST_ASSERT_FALSE(parseReadingsAnswer(nullptr, 5, &a));
+  std::string withZero = "{\"ackSeq\":1,\"serverTime\":\"2026-11-03T08:01:02Z\"}";
+  withZero.push_back('\0');
+  withZero += "x";
+  TEST_ASSERT_FALSE(readings(withZero, &a));
+}
+
+void test_a_body_of_deep_nesting_or_of_a_huge_size_is_refused_without_a_crash() {
+  ReadingsAnswer a;
+  std::string deep = "{\"ackSeq\":1,\"serverTime\":\"2026-11-03T08:01:02Z\",\"x\":";
+  for (int i = 0; i < 20000; i++) {
+    deep += "[";
+  }
+  TEST_ASSERT_FALSE(readings(deep, &a));
+  std::string nested = "{\"ackSeq\":1,\"serverTime\":\"2026-11-03T08:01:02Z\",\"x\":";
+  for (int i = 0; i < 6; i++) {
+    nested += "[";
+  }
+  for (int i = 0; i < 6; i++) {
+    nested += "]";
+  }
+  TEST_ASSERT_TRUE(readings(nested + "}", &a));
+  // A body above the limit is refused, even when it is valid JSON.
+  const std::string padding(kMaxAnswerBytes, ' ');
+  TEST_ASSERT_FALSE(readings(answer("") + padding, &a));
+  TEST_ASSERT_TRUE(readings(answer("") + std::string(kMaxAnswerBytes - answer("").size(), ' '), &a));
+}
+
+void test_a_long_text_is_cut_by_size_and_never_written_past_its_buffer() {
+  ReadingsAnswer a;
+  const std::string longText(5000, 'a');
+  TEST_ASSERT_TRUE(readings("{\"ackSeq\":1,\"serverTime\":\"2026-11-03T08:01:02Z\",\"message\":\"" + longText + "\"}", &a));
+  // The key that is too long for the buffer is not the key that we know.
+  TEST_ASSERT_TRUE(readings("{\"ackSeq\":1,\"serverTime\":\"2026-11-03T08:01:02Z\",\"ackSeq" + std::string(100, 'x') + "\":5}", &a));
+  TEST_ASSERT_EQUAL_UINT32(1, a.ackSeq);
+  // A server time that is too long for its buffer is not a time.
+  TEST_ASSERT_FALSE(readings("{\"ackSeq\":1,\"serverTime\":\"2026-11-03T08:01:02Z" + std::string(60, ' ') + "\"}", &a));
+}
+
+void test_an_error_body_gives_the_expected_number_and_the_wait() {
+  ErrorAnswer e;
+  TEST_ASSERT_TRUE(failure("{\"code\":\"sequence_gap\",\"message\":\"The sequence number is not the next one.\",\"expectedSeq\":57}", &e));
+  TEST_ASSERT_EQUAL_STRING("sequence_gap", e.code);
+  TEST_ASSERT_TRUE(e.hasExpectedSeq);
+  TEST_ASSERT_EQUAL_UINT32(57, e.expectedSeq);
+  TEST_ASSERT_EQUAL_UINT32(0, e.retryAfterSeconds);
+  TEST_ASSERT_TRUE(failure("{\"code\":\"rate_limited\",\"message\":\"Too many\",\"retryAfterSeconds\":42}", &e));
+  TEST_ASSERT_EQUAL_STRING("rate_limited", e.code);
+  TEST_ASSERT_FALSE(e.hasExpectedSeq);
+  TEST_ASSERT_EQUAL_UINT32(42, e.retryAfterSeconds);
+  TEST_ASSERT_TRUE(failure("{\"code\":\"invalid_gateway_key\",\"message\":\"No\"}", &e));
+  TEST_ASSERT_EQUAL_STRING("invalid_gateway_key", e.code);
+  // The number 0 is a real expected number.
+  TEST_ASSERT_TRUE(failure("{\"expectedSeq\":0}", &e));
+  TEST_ASSERT_TRUE(e.hasExpectedSeq);
+  TEST_ASSERT_EQUAL_UINT32(0, e.expectedSeq);
+}
+
+void test_an_error_body_with_wrong_types_or_odd_content_gives_empty_fields() {
+  ErrorAnswer e;
+  TEST_ASSERT_TRUE(failure("{\"code\":5,\"expectedSeq\":\"7\",\"retryAfterSeconds\":-3,\"fields\":{\"password\":\"too_short\"}}", &e));
+  TEST_ASSERT_EQUAL_STRING("", e.code);
+  TEST_ASSERT_FALSE(e.hasExpectedSeq);
+  TEST_ASSERT_EQUAL_UINT32(0, e.retryAfterSeconds);
+  TEST_ASSERT_TRUE(failure("{\"code\":\"" + std::string(60, 'c') + "\"}", &e));
+  TEST_ASSERT_EQUAL_STRING("", e.code);
+  TEST_ASSERT_TRUE(failure("{\"expectedSeq\":4294967296,\"retryAfterSeconds\":1.5}", &e));
+  TEST_ASSERT_FALSE(e.hasExpectedSeq);
+  TEST_ASSERT_EQUAL_UINT32(0, e.retryAfterSeconds);
+  TEST_ASSERT_TRUE(failure("{}", &e));
+  TEST_ASSERT_EQUAL_STRING("", e.code);
+}
+
+void test_an_error_body_that_is_not_json_is_reported_and_leaves_empty_fields() {
+  ErrorAnswer e;
+  TEST_ASSERT_FALSE(failure("<html>Bad gateway</html>", &e));
+  TEST_ASSERT_EQUAL_STRING("", e.code);
+  TEST_ASSERT_FALSE(e.hasExpectedSeq);
+  TEST_ASSERT_FALSE(failure("", &e));
+  TEST_ASSERT_FALSE(failure("{\"code\":\"x\"", &e));
+  TEST_ASSERT_EQUAL_STRING("", e.code);
+  TEST_ASSERT_FALSE(failure("[1,2]", &e));
+}
+
+void test_the_answer_of_the_enroll_route_is_read() {
+  EnrollAnswer e;
+  TEST_ASSERT_TRUE(enroll(std::string("{\"claimCode\":\"ABCD2345\",\"pollId\":\"") + kPoll + "\",\"expiresInSeconds\":600}", &e));
+  TEST_ASSERT_EQUAL_STRING("ABCD2345", e.claimCode);
+  TEST_ASSERT_EQUAL_STRING(kPoll, e.pollId);
+  TEST_ASSERT_EQUAL_UINT32(600, e.expiresInSeconds);
+  // A poll id of 64 characters is the longest that fits.
+  TEST_ASSERT_TRUE(enroll("{\"claimCode\":\"ABCD2345\",\"pollId\":\"" + std::string(64, 'p') + "\",\"expiresInSeconds\":600,\"extra\":true}", &e));
+  TEST_ASSERT_EQUAL_UINT(64, strlen(e.pollId));
+}
+
+void test_an_enroll_answer_with_a_code_or_a_poll_id_that_the_hub_cannot_use_is_refused() {
+  EnrollAnswer e;
+  const std::string poll = std::string("\"pollId\":\"") + kPoll + "\"";
+  TEST_ASSERT_FALSE(enroll("{\"claimCode\":\"ABCD234\"," + poll + ",\"expiresInSeconds\":600}", &e));    // 7 characters
+  TEST_ASSERT_FALSE(enroll("{\"claimCode\":\"ABCD23456\"," + poll + ",\"expiresInSeconds\":600}", &e));  // 9 characters
+  TEST_ASSERT_FALSE(enroll("{\"claimCode\":\"abcd2345\"," + poll + ",\"expiresInSeconds\":600}", &e));   // lower case
+  TEST_ASSERT_FALSE(enroll("{\"claimCode\":\"ABCD2340\"," + poll + ",\"expiresInSeconds\":600}", &e));   // 0 is not in the alphabet
+  TEST_ASSERT_FALSE(enroll("{\"claimCode\":\"ABCD 345\"," + poll + ",\"expiresInSeconds\":600}", &e));
+  TEST_ASSERT_FALSE(enroll("{\"claimCode\":12345678," + poll + ",\"expiresInSeconds\":600}", &e));
+  TEST_ASSERT_FALSE(enroll("{\"pollId\":\"" + std::string(31, 'p') + "\",\"claimCode\":\"ABCD2345\",\"expiresInSeconds\":600}", &e));  // too short
+  TEST_ASSERT_FALSE(enroll("{\"pollId\":\"" + std::string(65, 'p') + "\",\"claimCode\":\"ABCD2345\",\"expiresInSeconds\":600}", &e));  // too long
+  TEST_ASSERT_FALSE(enroll("{\"pollId\":\"" + std::string(31, 'p') + "/\",\"claimCode\":\"ABCD2345\",\"expiresInSeconds\":600}", &e));  // a slash
+  TEST_ASSERT_FALSE(enroll("{\"pollId\":\"" + std::string(31, 'p') + "?\",\"claimCode\":\"ABCD2345\",\"expiresInSeconds\":600}", &e));
+  TEST_ASSERT_FALSE(enroll("{\"claimCode\":\"ABCD2345\",\"expiresInSeconds\":600}", &e));
+  TEST_ASSERT_FALSE(enroll("{\"claimCode\":\"ABCD2345\"," + poll + "}", &e));
+  TEST_ASSERT_FALSE(enroll("{\"claimCode\":\"ABCD2345\"," + poll + ",\"expiresInSeconds\":\"600\"}", &e));
+  TEST_ASSERT_FALSE(enroll("{}", &e));
+  TEST_ASSERT_EQUAL_STRING("", e.claimCode);
+  TEST_ASSERT_EQUAL_STRING("", e.pollId);
+}
+
+}  // namespace
+
+void setUp() {}
+void tearDown() {}
+
+int main() {
+  UNITY_BEGIN();
+  RUN_TEST(test_the_time_of_the_service_is_read_in_unix_seconds);
+  RUN_TEST(test_an_offset_and_a_fraction_of_a_second_are_read);
+  RUN_TEST(test_a_time_that_does_not_exist_or_is_not_the_form_is_refused);
+  RUN_TEST(test_a_time_outside_the_range_of_32_bits_is_refused_and_the_edges_are_read);
+  RUN_TEST(test_a_good_answer_of_the_readings_route_is_read);
+  RUN_TEST(test_the_commands_of_an_answer_are_read_in_order);
+  RUN_TEST(test_the_order_of_the_keys_white_space_and_unknown_keys_do_not_matter);
+  RUN_TEST(test_an_answer_without_a_list_of_commands_has_none);
+  RUN_TEST(test_an_answer_needs_the_number_and_the_time_of_the_service);
+  RUN_TEST(test_a_key_that_comes_twice_is_taken_from_its_last_value);
+  RUN_TEST(test_a_command_that_cannot_be_run_is_counted_and_left_out_and_the_rest_stay);
+  RUN_TEST(test_a_node_id_of_12_characters_fits_and_a_text_with_an_escape_is_read_as_its_characters);
+  RUN_TEST(test_a_text_with_a_character_that_is_not_ascii_or_a_control_character_is_not_used);
+  RUN_TEST(test_the_commands_beyond_the_limit_are_counted_and_the_first_ones_are_kept);
+  RUN_TEST(test_a_body_that_is_broken_is_refused);
+  RUN_TEST(test_a_body_of_deep_nesting_or_of_a_huge_size_is_refused_without_a_crash);
+  RUN_TEST(test_a_long_text_is_cut_by_size_and_never_written_past_its_buffer);
+  RUN_TEST(test_an_error_body_gives_the_expected_number_and_the_wait);
+  RUN_TEST(test_an_error_body_with_wrong_types_or_odd_content_gives_empty_fields);
+  RUN_TEST(test_an_error_body_that_is_not_json_is_reported_and_leaves_empty_fields);
+  RUN_TEST(test_the_answer_of_the_enroll_route_is_read);
+  RUN_TEST(test_an_enroll_answer_with_a_code_or_a_poll_id_that_the_hub_cannot_use_is_refused);
+  return UNITY_END();
+}

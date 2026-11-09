@@ -1,0 +1,7 @@
+{
+  "name": "api-answer",
+  "version": "0.1.0",
+  "description": "Reads the JSON answers of the backend to the hub (readings, enroll and the error body) with a small bounded scanner and no heap",
+  "frameworks": "*",
+  "platforms": "*"
+}
