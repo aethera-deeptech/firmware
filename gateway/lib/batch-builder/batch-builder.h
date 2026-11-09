@@ -31,8 +31,9 @@ constexpr size_t kNodeJsonBytes = 80;
 constexpr size_t kFixedJsonBytes = 6000;  // the frame of the batch and 64 results
 constexpr size_t kBatchBudgetBytes = 90000;
 static_assert(kBatchBudgetBytes < kMaxBodyBytes, "a batch must stay below the limit of the contract");
-// The least budget that still holds one node and one sample. A smaller budget given to the constructor is raised to this.
-constexpr size_t kMinBatchBudgetBytes = kFixedJsonBytes + kNodeJsonBytes + kMaxSampleJsonBytes;
+// The least budget that still holds one sample when 16 nodes wait, because the choice counts every waiting node before the first sample. A smaller
+// budget given to the constructor is raised to this.
+constexpr size_t kMinBatchBudgetBytes = kFixedJsonBytes + kMaxBatchNodes * kNodeJsonBytes + kMaxSampleJsonBytes;
 
 // The service counts every batch, also a retry, and allows 600 in an hour, which is one every 6 seconds.
 constexpr uint32_t kMinBatchGapMs = 6000;
