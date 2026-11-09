@@ -65,7 +65,9 @@ class CountingOutput : public BatchOutput {
   size_t bytes = 0;
 };
 
-bool idIsSafe(const char *id) {
+}  // namespace
+
+bool isSafeResultId(const char *id) {
   const size_t length = strnlen(id, kResultIdSize);
   if (length == 0 || length >= kResultIdSize) {
     return false;
@@ -79,8 +81,6 @@ bool idIsSafe(const char *id) {
   }
   return true;
 }
-
-}  // namespace
 
 BatchBuilder::BatchBuilder(SampleStore &store, const NodeRegistry &registry)
     : store_(store),
@@ -311,7 +311,7 @@ bool BatchBuilder::render(BatchOutput &out) const {
   bool firstResult = true;
   size_t written = 0;
   for (size_t i = 0; i < resultCount_ && written < kMaxBatchResults; i++) {
-    if (!idIsSafe(results_[i].id)) {
+    if (!isSafeResultId(results_[i].id)) {
       continue;
     }
     emit.text(firstResult ? ",\"results\":[" : ",");

@@ -52,6 +52,9 @@ struct RelayResult {
   bool ok;
 };
 
+// True for an id that is safe to write into the JSON without escaping, which is 1 to 36 letters, digits and hyphens. Other ids are never written.
+bool isSafeResultId(const char *id);
+
 // Where the JSON goes. The send code gives one that writes to the connection, and the tests give one that writes to a buffer. A write that returns false stops the batch.
 // The batch is written in many small pieces (about 15 for each sample), so an output that sends to a TLS connection must collect them in a buffer first.
 class BatchOutput {
