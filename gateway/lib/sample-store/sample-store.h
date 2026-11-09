@@ -97,8 +97,9 @@ class SampleStore : public SampleSink {
 
   // Drops every sample that has been held for more than kKeepSampleMs, so the batch code never sends one that the backend would refuse as older than a day.
   // The pool is in the order of arrival and the ages are not, because a node sets its own age, so this looks at every sample. Call it before each batch and so
-  // often that no sample reaches an age of 49 days, when the counter of the clock wraps. A clock value from before the arrival of a sample counts as no age, so a value
-  // that was read a moment too early drops nothing. Returns the number of samples that it dropped.
+  // often that no sample reaches an age of 2^31 ms (about 24.8 days), because a larger difference reads as a negative age and counts as no age.
+  // A clock value from before the arrival of a sample counts as no age, so a value that was read a moment too early drops nothing.
+  // Returns the number of samples that it dropped.
   size_t expire(uint32_t nowMs);
 
   // Drops every sample for which drop() is true. The kept samples move towards the head in the same order. A write goes to the place of the kept count and a
