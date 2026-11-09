@@ -308,6 +308,10 @@ void loop() {
         drawHome(true);
       }
       break;
+    case wattlink::ButtonEvent::NewCode:
+      // The hold of 10 seconds asks the backend client for a new claim code. The client is not started by this program yet.
+      Serial.println("Button: new claim code asked, the backend client is not started yet");
+      break;
     case wattlink::ButtonEvent::None:
       break;
   }
