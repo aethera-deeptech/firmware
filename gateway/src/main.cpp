@@ -1,4 +1,6 @@
 #include <Arduino.h>
+#include <esp_system.h>
+#include <new>
 
 #include "batch-builder.h"
 #include "boot-counter.h"
@@ -8,6 +10,8 @@
 #include "hub-button.h"
 #include "hub-link.h"
 #include "hub-pairing.h"
+#include "mbedtls-crypto.h"
+#include "mbedtls-x25519.h"
 #include "node-registry.h"
 #include "nvs-counter-store.h"
 #include "nvs-record-store.h"
@@ -44,6 +48,19 @@ static uint32_t lastReceivedLogged = 0;
 static uint32_t lastDroppedLogged = 0;
 static uint32_t lastRadioLogMs = 0;
 static wattlink::PairingWindow pairing;
+// The pool of samples is about 58 KB, so it is a static object and never on the stack. The link layer and the pairing need the boot number of the
+// hub, which exists only after the counter has run in setup(), so they are built there, in this memory. They stay null when the hub must not pair,
+// which means that the crypto self test failed or that there is no boot number. Frames are then read and dropped, and nothing is sent.
+static wattlink::SampleStore sampleStore;
+alignas(wattlink::HubPairing) static uint8_t hubPairingMemory[sizeof(wattlink::HubPairing)];
+alignas(wattlink::HubLink) static uint8_t hubLinkMemory[sizeof(wattlink::HubLink)];
+static wattlink::HubPairing *hubPairing = nullptr;
+static wattlink::HubLink *hubLink = nullptr;
+// The frames that one pass of loop() takes from the queue. HubLink writes flash for a frame, so the button and the Wi-Fi watch must still get their turn.
+constexpr int kFramesPerPass = 4;
+// The time of the last expiry of old samples. The pool drops a sample after about 24 hours, and this keeps the clock reads far from the wrap.
+static uint32_t lastExpireMs = 0;
+constexpr uint32_t kExpireEveryMs = 60000;
 // The seconds that the pairing screen showed last, so it is drawn again only when the number changes. -1 means that it is not on screen.
 static int lastPairingSeconds = -1;
 // What the home screen showed last, so that it is drawn again only when it changes. -1 means that it has to be drawn.
@@ -56,7 +73,8 @@ static wattlink::SelfTestResult cryptoResult = wattlink::SelfTestResult::HkdfFai
 // the backend exists, and the node count and the power stay 0 until the nodes are connected.
 static void drawHome(bool force) {
   const bool needSetup = wifi.state() == wattlink::LinkState::Idle;
-  const int key = needSetup ? 2 : (wifi.connected() ? 1 : 0);
+  const unsigned paired = static_cast<unsigned>(nodes.pairedCount());
+  const int key = static_cast<int>(paired) * 3 + (needSetup ? 2 : (wifi.connected() ? 1 : 0));
   if (!force && key == lastHome) {
     return;
   }
@@ -64,7 +82,7 @@ static void drawHome(bool force) {
   if (needSetup) {
     oled.show(wattlink::needSetupScreen());
   } else {
-    oled.show(wattlink::statusScreen(wifi.connected(), false, 0, 0));
+    oled.show(wattlink::statusScreen(wifi.connected(), false, paired, 0));
   }
 }
 
@@ -91,12 +109,48 @@ static void drawScreen(uint32_t now) {
   drawHome(false);
 }
 
-// The frames of the nodes wait in the queue of the radio. HubLink is not wired in yet, so they are counted and dropped here. One line shows the
-// counters at most every 5 seconds and only when they moved.
-static void drainRadio(uint32_t now) {
+// One line for each event that matters. The frames of a normal run (a HELLO, a TELEMETRY frame) are not logged one by one, because a node sends
+// one every few seconds. A line never holds a key, and it names a node by its id and not by its MAC.
+static void logLinkEvent(const wattlink::LinkEvent &event) {
+  switch (event.kind) {
+    case wattlink::LinkEventKind::PairRequest:
+      Serial.printf("Link: pair request, result %d, reason %d\n", static_cast<int>(event.request), static_cast<int>(event.refusal));
+      break;
+    case wattlink::LinkEventKind::PairedNode:
+      Serial.printf("Link: paired %s, %u samples in its first frame\n", event.nodeId, static_cast<unsigned>(event.samples));
+      break;
+    case wattlink::LinkEventKind::PairedNoAck:
+      Serial.printf("Link: paired %s, but its first frame was not answered\n", event.nodeId);
+      break;
+    case wattlink::LinkEventKind::PairingFailed:
+      Serial.printf("Link: pairing failed, reason %d\n", static_cast<int>(event.refusal));
+      break;
+    case wattlink::LinkEventKind::StoreFailed:
+      Serial.println("Link: a frame was dropped because the flash refused the boot value");
+      break;
+    case wattlink::LinkEventKind::HubBootMismatch:
+      Serial.printf("Link: %s names another boot of the hub\n", event.nodeId);
+      break;
+    default:
+      break;
+  }
+}
+
+// The frames of the nodes wait in the queue of the radio, and this is the one place that takes them out. When the link layer does not exist the
+// frames are read and dropped, so the queue never stays full. One line shows the counters at most every 5 seconds and only when they moved.
+static void serviceRadio(uint32_t now) {
   wattlink::EspNowRadio::Received frame;
-  while (radio.receive(&frame)) {
-    // Counted by the callback already, and dropped here until HubLink reads the queue.
+  for (int i = 0; i < kFramesPerPass && radio.receive(&frame); i++) {
+    if (hubLink != nullptr) {
+      logLinkEvent(hubLink->onFrame(now, frame.mac, frame.data, frame.length));
+    }
+  }
+  if (hubPairing != nullptr) {
+    hubPairing->update(now);
+  }
+  if (now - lastExpireMs >= kExpireEveryMs) {
+    lastExpireMs = now;
+    sampleStore.expire(now);
   }
   if (now - lastRadioLogMs < 5000) {
     return;
@@ -105,8 +159,9 @@ static void drainRadio(uint32_t now) {
     lastReceivedLogged = radio.received();
     lastDroppedLogged = radio.dropped();
     lastRadioLogMs = now;
-    Serial.printf("ESP-NOW: %lu frames received, %lu dropped by a full queue\n", static_cast<unsigned long>(lastReceivedLogged),
-                  static_cast<unsigned long>(lastDroppedLogged));
+    Serial.printf("ESP-NOW: %lu frames received, %lu dropped by a full queue, %u samples held, %lu bytes of heap free\n",
+                  static_cast<unsigned long>(lastReceivedLogged), static_cast<unsigned long>(lastDroppedLogged),
+                  static_cast<unsigned>(sampleStore.size()), static_cast<unsigned long>(ESP.getFreeHeap()));
   }
 }
 
@@ -147,7 +202,30 @@ void setup() {
   const uint32_t selfTestStart = millis();
   cryptoResult = wattlink::runCryptoSelfTest();
   Serial.printf("Crypto self test: %s (%lu ms)\n", wattlink::selfTestName(cryptoResult), static_cast<unsigned long>(millis() - selfTestStart));
+  // The link layer and the pairing are built only when the hub may pair, which is when the chip passed its self test and the boot number exists.
+  if (cryptoResult == wattlink::SelfTestResult::Ok && hubBootId != 0) {
+    uint8_t hubMac[wattlink::kMacSize];
+    esp_read_mac(hubMac, ESP_MAC_WIFI_STA);
+    wattlink::HubCrypto crypto;
+    crypto.context = nullptr;
+    crypto.hmac = &wattlink::mbedtlsHmacSha256;
+    crypto.open = &wattlink::mbedtlsAesGcmOpen;
+    crypto.seal = &wattlink::mbedtlsAesGcmSeal;
+    crypto.generate = &wattlink::mbedtlsX25519Generate;
+    crypto.agree = &wattlink::mbedtlsX25519Agree;
+    hubPairing = new (hubPairingMemory) wattlink::HubPairing(pairing, nodes, crypto, hubMac, hubBootId);
+    hubLink = new (hubLinkMemory) wattlink::HubLink(*hubPairing, nodes, radio, sampleStore, crypto);
+    Serial.println("Link: ready");
+  } else {
+    Serial.println("Link: off, the hub does not take frames");
+  }
+  // The heap is read before the radio starts and after it, to see what is left for the backend client. A hub that holds its pool as a static
+  // object has the 58 KB in the figure of the static memory and not in the heap.
+  Serial.printf("Heap before Wi-Fi: %lu free, largest block %lu\n", static_cast<unsigned long>(ESP.getFreeHeap()),
+                static_cast<unsigned long>(ESP.getMaxAllocHeap()));
   wifi.begin(millis());
+  Serial.printf("Heap after Wi-Fi start: %lu free, largest block %lu\n", static_cast<unsigned long>(ESP.getFreeHeap()),
+                static_cast<unsigned long>(ESP.getMaxAllocHeap()));
   drawHome(true);
 }
 
@@ -170,7 +248,7 @@ void loop() {
   const bool pressed = digitalRead(config::kHubButtonPin) == LOW;
 
   wifi.update(now);
-  drainRadio(now);
+  serviceRadio(now);
   drawScreen(now);
 
   switch (button.update(pressed, now)) {
@@ -182,6 +260,11 @@ void loop() {
       }
       if (hubBootId == 0) {
         Serial.println("Pairing: refused, the hub has no boot number");
+        break;
+      }
+      // Without the radio no node can answer, and without the link layer a frame of a node would not be read.
+      if (hubLink == nullptr || !radio.active()) {
+        Serial.println("Pairing: refused, the ESP-NOW link is not running");
         break;
       }
       switch (pairing.press(now)) {
@@ -204,6 +287,9 @@ void loop() {
       }
       // The setup network needs the radio, so the link is dropped first. The portal also closes the pairing window.
       pairing.close();
+      if (hubPairing != nullptr) {
+        hubPairing->close();
+      }
       lastPairingSeconds = -1;
       wifi.stop();
       if (!portal.start(now)) {
