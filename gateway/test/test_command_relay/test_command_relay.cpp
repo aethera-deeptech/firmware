@@ -379,7 +379,7 @@ void test_load_skips_slots_that_cannot_be_read_or_are_damaged_and_a_record_that_
   strcpy(good.id, "old-1");
   good.number = 0x0A01;
   good.state = CommandState::Done;
-  good.expiresAt = kServerTime - 1;
+  good.expiresAt = kServerTime - kNumberReserveSeconds - 1;
   rig.log.slots[0] = good;
   rig.log.present[0] = true;
   CommandRecord kept = good;
@@ -400,7 +400,7 @@ void test_load_skips_slots_that_cannot_be_read_or_are_damaged_and_a_record_that_
   TEST_ASSERT_EQUAL_UINT(2, rig.relay.load());
   // The record of "live-1" is still alive for the service, so it only gives its result again.
   TEST_ASSERT_EQUAL_INT(result(SubmitResult::AlreadyRan), result(submit(rig, 0, "live-1", plug)));
-  // The record of "old-1" had ended before the time of the service, so the id is forgotten and a command with it is new.
+  // The record of "old-1" ended longer ago than a plug remembers a number, so the id is forgotten and a command with it is new.
   TEST_ASSERT_EQUAL_INT(result(SubmitResult::Queued), result(submit(rig, 0, "old-1", plug)));
   TEST_ASSERT_EQUAL_INT(result(SubmitResult::Queued), result(submit(rig, 0, "bad-1", plug)));
 }
@@ -494,25 +494,176 @@ void test_the_queue_holds_sixteen_commands_and_a_command_for_a_queued_plug_still
   TEST_ASSERT_EQUAL_UINT(kMaxQueuedCommands, rig.relay.pendingCount());
 }
 
-void test_the_results_are_capped_at_sixty_four_with_the_oldest_dropped_first_and_drop_keeps_the_newer() {
+// Runs one command of a plug through to its result, so the result waits for a batch.
+void finishCommand(Rig &rig, uint8_t number, const char *id, uint32_t expiresAt, uint32_t counter) {
+  char plug[kNodeIdSize];
+  uint8_t mac[kMacSize];
+  macOfNumber(number, mac);
+  TEST_ASSERT_TRUE(rig.registry.nodeId(mac, plug));
+  TEST_ASSERT_EQUAL_INT(result(SubmitResult::Queued), result(rig.relay.submit(0, kServerTime, id, plug, true, expiresAt)));
+  rig.relay.onEvent(10, telemetry(number, counter));
+  rig.relay.onEvent(20, resultEvent(number, rig.sender.calls[rig.sender.count - 1].number, true));
+}
+
+void test_a_batch_takes_sixty_four_results_and_the_rest_waits_and_drop_keeps_the_newer() {
   Rig rig;
   char plug[kNodeIdSize];
   pairPlug(rig, 1, plug);
   for (uint32_t i = 0; i < 70; i++) {
     char id[16];
     snprintf(id, sizeof(id), "c%u", static_cast<unsigned>(i));
-    TEST_ASSERT_EQUAL_INT(result(SubmitResult::Queued), result(rig.relay.submit(0, kServerTime, id, plug, true, kExpires + i)));
-    rig.relay.onEvent(10, telemetry(1, 10 + i));
-    rig.relay.onEvent(20, resultEvent(1, rig.sender.calls[i].number, true));
+    finishCommand(rig, 1, id, kExpires + i, 10 + i);
   }
   TEST_ASSERT_EQUAL_UINT(kMaxBatchResults, rig.relay.resultCount());
-  TEST_ASSERT_EQUAL_STRING("c6", rig.relay.results()[0].id);
-  TEST_ASSERT_EQUAL_STRING("c69", rig.relay.results()[kMaxBatchResults - 1].id);
-  rig.relay.dropResults(10);
-  TEST_ASSERT_EQUAL_UINT(kMaxBatchResults - 10, rig.relay.resultCount());
-  TEST_ASSERT_EQUAL_STRING("c16", rig.relay.results()[0].id);
+  TEST_ASSERT_EQUAL_STRING("c0", rig.relay.results()[0].id);
+  TEST_ASSERT_EQUAL_STRING("c63", rig.relay.results()[kMaxBatchResults - 1].id);
+  // The batch carries the first 64, and a result that comes in meanwhile does not move them.
+  finishCommand(rig, 1, "c70", kExpires + 70, 90);
+  TEST_ASSERT_EQUAL_STRING("c0", rig.relay.results()[0].id);
+  TEST_ASSERT_EQUAL_STRING("c63", rig.relay.results()[kMaxBatchResults - 1].id);
+  rig.relay.dropResults(kMaxBatchResults);
+  TEST_ASSERT_EQUAL_UINT(7, rig.relay.resultCount());
+  TEST_ASSERT_EQUAL_STRING("c64", rig.relay.results()[0].id);
+  TEST_ASSERT_EQUAL_STRING("c70", rig.relay.results()[6].id);
   rig.relay.dropResults(1000);
   TEST_ASSERT_EQUAL_UINT(0, rig.relay.resultCount());
+}
+
+void test_a_full_log_refuses_a_new_command_until_the_results_of_finished_ones_are_passed_on() {
+  Rig rig;
+  char plug[kNodeIdSize];
+  pairPlug(rig, 1, plug);
+  for (uint32_t i = 0; i < kCommandLogSlots; i++) {
+    char id[16];
+    snprintf(id, sizeof(id), "c%u", static_cast<unsigned>(i));
+    finishCommand(rig, 1, id, kExpires + i, 10 + i);
+  }
+  // Every record is of a command that is done, and every result still waits, so no slot may be taken.
+  TEST_ASSERT_EQUAL_INT(result(SubmitResult::Full), result(submit(rig, 0, "next-1", plug)));
+  TEST_ASSERT_EQUAL_UINT(0, rig.relay.pendingCount());
+  // After the batch that carried 64 of them is acknowledged, their slots may be taken, the oldest first.
+  rig.relay.dropResults(kMaxBatchResults);
+  TEST_ASSERT_EQUAL_INT(result(SubmitResult::Queued), result(submit(rig, 0, "next-1", plug)));
+  rig.relay.onEvent(30, telemetry(1, 500));
+  // The record of the oldest dropped result, which was in slot 0, is the one that went. The next ones are still there.
+  TEST_ASSERT_EQUAL_STRING("next-1", rig.log.slots[0].id);
+  TEST_ASSERT_EQUAL_STRING("c1", rig.log.slots[1].id);
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(CommandState::Sent), static_cast<int>(rig.log.slots[0].state));
+}
+
+void test_records_of_commands_that_were_sent_before_a_restart_are_never_reused_for_a_new_command() {
+  Rig rig;
+  char plug[kNodeIdSize];
+  pairPlug(rig, 1, plug);
+  for (size_t i = 0; i < kCommandLogSlots; i++) {
+    CommandRecord record = {};
+    snprintf(record.id, sizeof(record.id), "sent-%u", static_cast<unsigned>(i));
+    record.number = static_cast<uint16_t>(0x0A00 + i + 1);
+    record.state = CommandState::Sent;
+    record.expiresAt = kServerTime + 100;
+    rig.log.slots[i] = record;
+    rig.log.present[i] = true;
+  }
+  TEST_ASSERT_EQUAL_UINT(kCommandLogSlots, rig.relay.load());
+  TEST_ASSERT_EQUAL_INT(result(SubmitResult::Full), result(submit(rig, 0, "new-1", plug)));
+  // A command that the backend lists again is still found.
+  TEST_ASSERT_EQUAL_INT(result(SubmitResult::Resumed), result(submit(rig, 0, "sent-3", plug)));
+}
+
+void test_a_number_stays_reserved_after_its_command_ended_and_the_number_zero_is_never_used() {
+  Rig rig(0x1FF);
+  CommandRecord ended = {};
+  strcpy(ended.id, "ended-1");
+  ended.number = 0xFF01;
+  ended.state = CommandState::Done;
+  ended.expiresAt = kServerTime - 100;
+  rig.log.slots[0] = ended;
+  rig.log.present[0] = true;
+  TEST_ASSERT_EQUAL_UINT(1, rig.relay.load());
+  char plug[kNodeIdSize];
+  pairPlug(rig, 1, plug);
+  // The command ended 100 seconds ago, a plug remembers the number for 600 seconds more, so 0xFF01 is skipped.
+  submit(rig, 0, "cmd-1", plug);
+  rig.relay.onEvent(10, telemetry(1, 1));
+  TEST_ASSERT_EQUAL_UINT16(0xFF00, rig.sender.calls[0].number);
+  rig.relay.onEvent(20, resultEvent(1, 0xFF00, true));
+  submit(rig, 30, "cmd-2", plug);
+  rig.relay.onEvent(40, telemetry(1, 2));
+  TEST_ASSERT_EQUAL_UINT16(0xFF02, rig.sender.calls[1].number);
+  // A boot number with the low byte 0 would give the number 0 first, and the relay goes on to 1.
+  Rig zero(0x100);
+  char other[kNodeIdSize];
+  pairPlug(zero, 1, other);
+  submit(zero, 0, "cmd-1", other);
+  zero.relay.onEvent(10, telemetry(1, 1));
+  TEST_ASSERT_EQUAL_UINT16(0x0001, zero.sender.calls[0].number);
+}
+
+void test_a_command_whose_life_is_over_is_not_sent_when_a_frame_comes_before_update() {
+  Rig rig;
+  char plug[kNodeIdSize];
+  pairPlug(rig, 1, plug);
+  submit(rig, 1000, "cmd-1", plug);
+  rig.relay.onEvent(1000 + kMaxCommandLifeSeconds * 1000 + 1, telemetry(1, 50));
+  TEST_ASSERT_EQUAL_UINT(0, rig.sender.count);
+  TEST_ASSERT_EQUAL_UINT(0, rig.relay.pendingCount());
+}
+
+void test_a_command_is_not_sent_to_a_node_that_was_removed_and_forget_ends_it_for_a_pairing_that_comes_back() {
+  Rig rig;
+  char plug[kNodeIdSize];
+  pairPlug(rig, 1, plug);
+  uint8_t mac[kMacSize];
+  macOfNumber(1, mac);
+  submit(rig, 0, "cmd-1", plug);
+  TEST_ASSERT_TRUE(rig.registry.unpair(mac));
+  rig.relay.onEvent(100, telemetry(1, 5));
+  TEST_ASSERT_EQUAL_UINT(0, rig.sender.count);
+  TEST_ASSERT_EQUAL_UINT(0, rig.relay.pendingCount());
+  // A command for the old pairing must not reach the node when it is paired again, so the unpair path calls forget().
+  char again[kNodeIdSize];
+  pairPlug(rig, 1, again);
+  submit(rig, 200, "cmd-2", again);
+  rig.relay.forget(mac);
+  TEST_ASSERT_EQUAL_UINT(0, rig.relay.pendingCount());
+  rig.relay.onEvent(300, telemetry(1, 6));
+  TEST_ASSERT_EQUAL_UINT(0, rig.sender.count);
+}
+
+void test_resends_stop_when_the_newest_frame_is_too_old_and_start_again_with_the_next_frame() {
+  Rig rig;
+  char plug[kNodeIdSize];
+  pairPlug(rig, 1, plug);
+  submit(rig, 0, "cmd-1", plug);
+  rig.relay.onEvent(1000, telemetry(1, 10));
+  TEST_ASSERT_EQUAL_UINT(1, rig.sender.count);
+  for (uint32_t t = 1000 + kCommandResendMs; t < 1000 + kEchoUsableMs; t += kCommandResendMs) {
+    rig.relay.update(t);
+  }
+  const size_t beforeLimit = rig.sender.count;
+  TEST_ASSERT_EQUAL_UINT(10, beforeLimit);
+  rig.relay.update(1000 + kEchoUsableMs);
+  rig.relay.update(1000 + kEchoUsableMs + kCommandResendMs);
+  TEST_ASSERT_EQUAL_UINT(beforeLimit, rig.sender.count);
+  // The next frame of the plug is a new echo, and the resends go on.
+  rig.relay.onEvent(60000, telemetry(1, 20));
+  rig.relay.update(60000);
+  TEST_ASSERT_EQUAL_UINT(beforeLimit + 1, rig.sender.count);
+  TEST_ASSERT_EQUAL_UINT32(20, rig.sender.calls[beforeLimit].echoCounter);
+}
+
+void test_a_paired_node_event_sends_the_command_and_a_result_before_the_first_send_is_ignored() {
+  Rig rig;
+  char plug[kNodeIdSize];
+  pairPlug(rig, 1, plug);
+  submit(rig, 0, "cmd-1", plug);
+  rig.relay.onEvent(50, resultEvent(1, 0x0500, true));
+  TEST_ASSERT_EQUAL_UINT(0, rig.relay.resultCount());
+  TEST_ASSERT_EQUAL_UINT(1, rig.relay.pendingCount());
+  LinkEvent paired = telemetry(1, 0);
+  paired.kind = LinkEventKind::PairedNode;
+  rig.relay.onEvent(100, paired);
+  TEST_ASSERT_EQUAL_UINT(1, rig.sender.count);
 }
 
 int main() {
@@ -533,6 +684,13 @@ int main() {
   RUN_TEST(test_a_flash_that_refuses_the_record_holds_back_a_switch_on_but_not_a_switch_off);
   RUN_TEST(test_a_radio_that_refuses_the_frame_does_not_stop_the_resends);
   RUN_TEST(test_the_queue_holds_sixteen_commands_and_a_command_for_a_queued_plug_still_fits);
-  RUN_TEST(test_the_results_are_capped_at_sixty_four_with_the_oldest_dropped_first_and_drop_keeps_the_newer);
+  RUN_TEST(test_a_batch_takes_sixty_four_results_and_the_rest_waits_and_drop_keeps_the_newer);
+  RUN_TEST(test_a_full_log_refuses_a_new_command_until_the_results_of_finished_ones_are_passed_on);
+  RUN_TEST(test_records_of_commands_that_were_sent_before_a_restart_are_never_reused_for_a_new_command);
+  RUN_TEST(test_a_number_stays_reserved_after_its_command_ended_and_the_number_zero_is_never_used);
+  RUN_TEST(test_a_command_whose_life_is_over_is_not_sent_when_a_frame_comes_before_update);
+  RUN_TEST(test_a_command_is_not_sent_to_a_node_that_was_removed_and_forget_ends_it_for_a_pairing_that_comes_back);
+  RUN_TEST(test_resends_stop_when_the_newest_frame_is_too_old_and_start_again_with_the_next_frame);
+  RUN_TEST(test_a_paired_node_event_sends_the_command_and_a_result_before_the_first_send_is_ignored);
   return UNITY_END();
 }

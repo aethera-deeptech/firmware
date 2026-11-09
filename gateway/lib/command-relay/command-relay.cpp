@@ -59,13 +59,28 @@ int CommandRelay::findLog(const char *id) const {
   return -1;
 }
 
+bool CommandRelay::resultWaiting(const char *id) const {
+  for (size_t i = 0; i < resultCount_; i++) {
+    if (strncmp(results_[i].id, id, kResultIdSize) == 0) {
+      return true;
+    }
+  }
+  return false;
+}
+
 int CommandRelay::pickLogSlot() const {
-  int oldest = 0;
+  // A free slot first. Then the oldest record of a command that is done and whose result was passed on already, because the backend does not send that
+  // command again. A record of a command that was sent and has no answer, or that is queued, or whose result still waits, is never taken.
+  int oldest = -1;
   for (size_t i = 0; i < kCommandLogSlots; i++) {
     if (records_[i].state == CommandState::Free) {
       return static_cast<int>(i);
     }
-    if (records_[i].expiresAt < records_[oldest].expiresAt) {
+    const bool finished = records_[i].state == CommandState::Done || records_[i].state == CommandState::Failed;
+    if (!finished || findPending(records_[i].id) >= 0 || resultWaiting(records_[i].id)) {
+      continue;
+    }
+    if (oldest < 0 || records_[i].expiresAt < records_[oldest].expiresAt) {
       oldest = static_cast<int>(i);
     }
   }
@@ -92,7 +107,8 @@ bool CommandRelay::allocateNumber(uint16_t *number) {
   for (unsigned tries = 0; tries < 256; tries++) {
     const uint16_t candidate = static_cast<uint16_t>(((hubBootId_ & 0xFFu) << 8) | nextSeq_);
     nextSeq_ = static_cast<uint8_t>(nextSeq_ + 1);
-    if (!numberInUse(candidate)) {
+    // The number 0 is never used, because a plug may treat it as an empty place in its list of numbers.
+    if (candidate != 0 && !numberInUse(candidate)) {
       *number = candidate;
       return true;
     }
@@ -104,6 +120,9 @@ bool CommandRelay::persist(const Pending &pending, CommandState state) {
   int slot = findLog(pending.id);
   if (slot < 0) {
     slot = pickLogSlot();
+  }
+  if (slot < 0) {
+    return false;
   }
   CommandRecord record;
   memset(&record, 0, sizeof(record));
@@ -126,12 +145,7 @@ SubmitResult CommandRelay::submit(uint32_t nowMs, uint32_t serverTime, const cha
   if (nodeId == nullptr) {
     return SubmitResult::UnknownNode;
   }
-  // A record whose command has ended by the time of the service is forgotten, which frees its slot and its number. Nothing is written for that.
-  for (size_t i = 0; i < kCommandLogSlots; i++) {
-    if (records_[i].state != CommandState::Free && records_[i].expiresAt < serverTime) {
-      memset(&records_[i], 0, sizeof(records_[i]));
-    }
-  }
+  forgetEnded(serverTime);
   if (expiresAt <= serverTime) {
     return SubmitResult::Expired;
   }
@@ -174,7 +188,8 @@ SubmitResult CommandRelay::submit(uint32_t nowMs, uint32_t serverTime, const cha
   uint16_t number = 0;
   if (logged >= 0) {
     number = records_[logged].number;
-  } else if (!allocateNumber(&number)) {
+  } else if (pickLogSlot() < 0 || !allocateNumber(&number)) {
+    // No record could be kept for the command, so it would have to be sent without one. The backend sends it again when room is free.
     return SubmitResult::Full;
   }
 
@@ -193,6 +208,11 @@ SubmitResult CommandRelay::submit(uint32_t nowMs, uint32_t serverTime, const cha
 
 void CommandRelay::trySend(uint32_t nowMs, Pending *pending) {
   if (!pending->haveEcho) {
+    return;
+  }
+  // The life is checked here too, because a frame can come in before update() has ended the command, and a plug has no clock to refuse it.
+  if (reached(nowMs, pending->deadlineMs) || !registry_.isPaired(pending->mac)) {
+    memset(pending, 0, sizeof(*pending));
     return;
   }
   if (!pending->persisted) {
@@ -222,8 +242,10 @@ void CommandRelay::pushResult(const char *id, bool ok) {
       return;
     }
   }
-  if (resultCount_ == kMaxBatchResults) {
-    memmove(&results_[0], &results_[1], (kMaxBatchResults - 1) * sizeof(results_[0]));
+  // A result is held for a record of the log at most, and the slot of a record whose result waits is not reused, so the list is never full here.
+  // The test is a guard that keeps the array safe if that ever stops being true.
+  if (resultCount_ == kCommandLogSlots) {
+    memmove(&results_[0], &results_[1], (kCommandLogSlots - 1) * sizeof(results_[0]));
     resultCount_--;
   }
   RelayResult &entry = results_[resultCount_++];
@@ -251,6 +273,7 @@ void CommandRelay::onEvent(uint32_t nowMs, const LinkEvent &event) {
       // The newest frame is the echo for every send from now on, and a command that has not gone out yet goes out at once.
       p.echoBootId = event.frameBootId;
       p.echoCounter = event.frameCounter;
+      p.echoMs = nowMs;
       p.haveEcho = true;
       if (!p.sent) {
         trySend(nowMs, &p);
@@ -279,9 +302,26 @@ void CommandRelay::update(uint32_t nowMs) {
       memset(&p, 0, sizeof(p));
       continue;
     }
-    if (p.sent && p.haveEcho && reached(nowMs, p.lastSendMs + kCommandResendMs)) {
+    if (p.sent && p.haveEcho && nowMs - p.echoMs < kEchoUsableMs && reached(nowMs, p.lastSendMs + kCommandResendMs)) {
       p.lastSendMs = nowMs;
       sender_.sendCommand(p.mac, p.echoBootId, p.echoCounter, p.number, p.action);
+    }
+  }
+}
+
+void CommandRelay::forget(const uint8_t mac[kMacSize]) {
+  for (size_t i = 0; i < kMaxQueuedCommands; i++) {
+    if (pending_[i].used && sameMac(pending_[i].mac, mac)) {
+      memset(&pending_[i], 0, sizeof(pending_[i]));
+    }
+  }
+}
+
+void CommandRelay::forgetEnded(uint32_t serverTime) {
+  // The number of a command stays reserved for the time that a plug remembers it, so the record goes later than the command does.
+  for (size_t i = 0; i < kCommandLogSlots; i++) {
+    if (records_[i].state != CommandState::Free && records_[i].expiresAt + kNumberReserveSeconds < serverTime) {
+      memset(&records_[i], 0, sizeof(records_[i]));
     }
   }
 }

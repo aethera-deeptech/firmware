@@ -15,10 +15,16 @@ namespace wattlink {
 
 // How many commands wait or are in flight at the same time. A command lives 10 minutes at most.
 constexpr size_t kMaxQueuedCommands = 16;
-// How many commands the log keeps. A slot is reused when the command in it has ended, and the oldest slot goes first when all are used.
-constexpr size_t kCommandLogSlots = 32;
+// How many records the log keeps, enough for a command of every node and every queue place. A record is kept for the life of its command and then for
+// kNumberReserveSeconds more, because a plug remembers the number of a command for 10 minutes after it ran it. A slot is reused only when its
+// record is free, or when the command is done and its result is no longer waiting for a batch. A new command is refused when no slot can be used.
+constexpr size_t kCommandLogSlots = kMaxNodes + kMaxQueuedCommands;
+constexpr uint32_t kNumberReserveSeconds = 600;
 // The hub sends a command again after this time, with the echo of the newest frame of the plug, until the plug answers or the command ends.
 constexpr uint32_t kCommandResendMs = 5000;
+// The hub sends a command again only while the newest frame of the plug is not older than this, because a plug that is not heard cannot be reached
+// with an echo that it may have passed already. The next frame of the plug starts the resends again. A plug keeps the last 6 frames at 10 seconds.
+constexpr uint32_t kEchoUsableMs = 50000;
 // The longest life of a command, in seconds. A command that the backend lets live longer is cut to this.
 constexpr uint32_t kMaxCommandLifeSeconds = 600;
 
@@ -44,6 +50,8 @@ class CommandLog {
   virtual ~CommandLog() = default;
   // Reads one slot. Returns false when the slot cannot be read or holds a damaged record, and the slot then counts as free.
   virtual bool read(size_t slot, CommandRecord *out) = 0;
+  // Writes one slot. A write that fails or is cut by a loss of power must leave the old record or the new record readable, never a damaged one,
+  // because a record that cannot be read counts as free, and the hub could then run an id again. The flash implementation has to keep this.
   virtual bool write(size_t slot, const CommandRecord &record) = 0;
 };
 
@@ -55,7 +63,7 @@ enum class SubmitResult : uint8_t {
   UnknownNode,  // no paired node has this id
   BadId,        // the id of the command is empty, longer than 36 characters, or holds a character that is not a letter, a digit or a hyphen
   Expired,      // the command has no life left, so it is not run
-  Full,         // the queue or the numbers are used up, so the command is not taken and the backend sends it again
+  Full,         // the queue, the numbers or the log are used up, so the command is not taken and the backend sends it again
 };
 
 class CommandRelay {
@@ -70,7 +78,8 @@ class CommandRelay {
   size_t load();
 
   // A command from the answer of the backend. serverTime is the time of the service in that answer, and expiresAt is the time of the command, both in
-  // seconds, because the clock of the hub may be unset. A newer command for the same plug replaces the one that waits or is in flight, because the
+  // seconds, because the clock of the hub may be unset. nowMs is the time at which the answer arrived, and not the time at which the batch left, because
+  // the life of the command is counted from it. A newer command for the same plug replaces the one that waits or is in flight, because the
   // backend lists only the newer one from then on. A command that has ended or was replaced gets no result, and the backend lets it expire.
   SubmitResult submit(uint32_t nowMs, uint32_t serverTime, const char *id, const char *nodeId, bool on, uint32_t expiresAt);
 
@@ -81,11 +90,20 @@ class CommandRelay {
   void update(uint32_t nowMs);
 
   // The results for the next batch. The caller passes them to the batch builder and keeps them until the backend acknowledges that batch, then calls
-  // dropResults with the number that it passed, so a result that came in meanwhile stays for the next batch. At most kMaxBatchResults are held, and the
-  // oldest goes first, because the backend ignores a result for a command that has ended.
-  size_t resultCount() const { return resultCount_; }
+  // dropResults with the number that it passed, so a result that came in meanwhile stays for the next batch. A batch takes kMaxBatchResults at most,
+  // so resultCount() is never more than that and the rest waits. The relay holds a result for every record of the log at most, and a record whose result
+  // waits is never reused, so a new result always finds room and the entries that were passed never move.
+  size_t resultCount() const { return resultCount_ < kMaxBatchResults ? resultCount_ : kMaxBatchResults; }
   const RelayResult *results() const { return results_; }
   void dropResults(size_t count);
+
+  // Forgets the commands of a node that was removed, with no result, so a command for the old pairing never reaches a new one. Call it when a node is
+  // unpaired.
+  void forget(const uint8_t mac[kMacSize]);
+
+  // Forgets the records whose command ended more than kNumberReserveSeconds before serverTime. submit() does it too, and the caller may call it for an
+  // answer that holds no command, so the log does not fill up with old records. Nothing is written to flash.
+  void forgetEnded(uint32_t serverTime);
 
   size_t pendingCount() const;
   // The number of writes that the flash refused, for the log of the hub.
@@ -103,6 +121,7 @@ class CommandRelay {
     char id[kResultIdSize];
     uint32_t deadlineMs;
     uint32_t lastSendMs;
+    uint32_t echoMs;     // the time of the frame that the echo comes from
     uint32_t echoBootId;
     uint32_t echoCounter;
     uint32_t expiresAt;
@@ -110,7 +129,8 @@ class CommandRelay {
 
   int findPending(const char *id) const;
   int findLog(const char *id) const;
-  int pickLogSlot() const;
+  int pickLogSlot() const;  // -1 when no slot can be used
+  bool resultWaiting(const char *id) const;
   bool numberInUse(uint16_t number) const;
   bool allocateNumber(uint16_t *number);
   bool persist(const Pending &pending, CommandState state);
@@ -126,7 +146,7 @@ class CommandRelay {
   uint32_t logFailures_;
   Pending pending_[kMaxQueuedCommands];
   CommandRecord records_[kCommandLogSlots];
-  RelayResult results_[kMaxBatchResults];
+  RelayResult results_[kCommandLogSlots];
   size_t resultCount_;
 };
 
