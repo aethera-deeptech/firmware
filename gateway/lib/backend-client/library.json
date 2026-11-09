@@ -1,0 +1,7 @@
+{
+  "name": "backend-client",
+  "version": "0.1.0",
+  "description": "The conversation of the hub with the backend. It enrolls the hub, waits for the claim, sends the batches of readings, reads the answers, and hands the relay commands to the command relay. It holds no connection of its own and talks through a small HTTP interface",
+  "frameworks": "*",
+  "platforms": "*"
+}
