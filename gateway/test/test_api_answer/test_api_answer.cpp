@@ -511,7 +511,43 @@ void test_a_cut_body_with_wrong_bytes_before_the_cut_is_still_refused_and_the_ke
   TEST_ASSERT_TRUE(parseReadingsAnswer((head + "tru").data(), head.size() + 3, &a, true));
   TEST_ASSERT_TRUE(parseReadingsAnswer((head + "12").data(), head.size() + 2, &a, true));
   TEST_ASSERT_TRUE(parseReadingsAnswer((head + "\"ab").data(), head.size() + 3, &a, true));
+  // A cut inside an escape of a skipped text is the end of the body too, and a wrong digit in the escape is not.
+  TEST_ASSERT_TRUE(parseReadingsAnswer((head + "\"\\u00").data(), head.size() + 5, &a, true));
+  TEST_ASSERT_TRUE(parseReadingsAnswer((head + "\"\\u").data(), head.size() + 3, &a, true));
+  TEST_ASSERT_TRUE(parseReadingsAnswer((head + "\"\\").data(), head.size() + 2, &a, true));
+  TEST_ASSERT_FALSE(parseReadingsAnswer((head + "\"\\u0x").data(), head.size() + 5, &a, true));
   TEST_ASSERT_FALSE(parseReadingsAnswer((head + "trx").data(), head.size() + 3, &a, true));
+}
+
+void test_a_known_field_with_broken_json_fails_the_whole_answer_in_every_parser() {
+  ReadingsAnswer a;
+  ErrorAnswer e;
+  EnrollAnswer n;
+  const std::string poll = std::string("\"pollId\":\"") + kPoll + "\"";
+  TEST_ASSERT_FALSE(readings("{\"ackSeq\":-,\"serverTime\":\"2026-11-03T08:01:02Z\"}", &a));
+  TEST_ASSERT_FALSE(readings("{\"ackSeq\":1,\"serverTime\":\"2026-11-03T08:01:02Z}", &a));
+  TEST_ASSERT_FALSE(readings("{\"ackSeq\":1,\"serverTime\":\"2026-11-03T08:01:02Z\",\"commands\":[{\"id\":\"ab}]}", &a));
+  TEST_ASSERT_FALSE(readings("{\"ackSeq\":1,\"serverTime\":\"2026-11-03T08:01:02Z\",\"commands\":[{\"nodeId\":\"ab}]}", &a));
+  TEST_ASSERT_FALSE(readings("{\"ackSeq\":1,\"serverTime\":\"2026-11-03T08:01:02Z\",\"commands\":[{\"action\":\"ab}]}", &a));
+  TEST_ASSERT_FALSE(readings("{\"ackSeq\":1,\"serverTime\":\"2026-11-03T08:01:02Z\",\"commands\":[{\"expiresAt\":\"ab}]}", &a));
+  TEST_ASSERT_FALSE(failure("{\"code\":\"abc", &e));
+  TEST_ASSERT_FALSE(failure("{\"expectedSeq\":-}", &e));
+  TEST_ASSERT_FALSE(failure("{\"retryAfterSeconds\":1.}", &e));
+  TEST_ASSERT_FALSE(enroll("{\"claimCode\":\"AB", &n));
+  TEST_ASSERT_FALSE(enroll("{" + poll.substr(0, 20), &n));
+  TEST_ASSERT_FALSE(enroll("{\"expiresInSeconds\":-}", &n));
+}
+
+void test_every_escape_of_json_and_the_forms_of_a_number_are_read() {
+  ReadingsAnswer a;
+  const std::string head = "{\"ackSeq\":1,\"serverTime\":\"2026-11-03T08:01:02Z\",\"x\":";
+  TEST_ASSERT_TRUE(readings(head + "\"\\b\\f\\n\\r\\t\\/\\\\\\\"\\u00Ab\"}", &a));
+  TEST_ASSERT_TRUE(readings(head + "[1e+5,1E-2,0.5,-0,-0.5e2,12345678901234567890]}", &a));
+  // An escape that decodes to a control character makes the field invalid, and the answer is still read.
+  ErrorAnswer e;
+  TEST_ASSERT_TRUE(failure("{\"code\":\"a\\tb\"}", &e));
+  TEST_ASSERT_EQUAL_STRING("", e.code);
+  TEST_ASSERT_TRUE(failure("{\"code\":\"a\\u00Fz\"}", &e) == false);
 }
 
 }  // namespace
@@ -548,6 +584,8 @@ int main() {
   RUN_TEST(test_a_long_answer_that_was_cut_is_read_as_far_as_it_goes);
   RUN_TEST(test_a_cut_at_every_byte_keeps_only_whole_commands_and_needs_the_first_fields);
   RUN_TEST(test_a_cut_body_with_wrong_bytes_before_the_cut_is_still_refused_and_the_keys_must_come_first);
+  RUN_TEST(test_a_known_field_with_broken_json_fails_the_whole_answer_in_every_parser);
+  RUN_TEST(test_every_escape_of_json_and_the_forms_of_a_number_are_read);
   RUN_TEST(test_the_answer_of_the_enroll_route_is_read);
   RUN_TEST(test_an_enroll_answer_with_a_code_or_a_poll_id_that_the_hub_cannot_use_is_refused);
   return UNITY_END();

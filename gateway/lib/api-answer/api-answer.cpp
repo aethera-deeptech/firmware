@@ -99,6 +99,10 @@ class Scanner {
             break;
           case 'u': {
             if (end_ - cur_ < 4) {
+              // A cut inside the escape is the end of the body, unless a byte that is not a hex digit comes first.
+              while (cur_ < end_ && hexValue(*cur_) >= 0) {
+                cur_++;
+              }
               return false;
             }
             uint32_t code = 0;
