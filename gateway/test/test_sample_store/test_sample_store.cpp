@@ -450,36 +450,60 @@ void test_a_node_that_floods_cannot_push_out_more_than_its_share_of_the_samples_
   TEST_ASSERT_EQUAL_UINT32(kMaxSamplesPerNode, store.counts().overflowed);
 }
 
+// Fills the share of a node, and then sends one sample more. A count that is too high shows as a push-out that should not be, and a count that is too low
+// shows as no push-out that should be.
+void sendUntilCappedOnce(SampleStore &store, uint32_t nowMs, const uint8_t mac[kMacSize], uint32_t *next) {
+  const uint32_t before = store.counts().capped;
+  size_t guard = 0;
+  while (store.counts().capped == before && guard++ < 2 * kMaxSamplesPerNode) {
+    sendRun(store, nowMs, mac, *next, 1);
+    (*next)++;
+  }
+  TEST_ASSERT_EQUAL_UINT32(before + 1, store.counts().capped);
+}
+
 void test_the_count_of_a_node_follows_every_way_that_samples_leave_the_pool() {
   SampleStore store;
-  sendRun(store, 10000, kMacA, 0, kMaxSamplesPerNode);
-  sendRun(store, 10000, kMacB, 0, 10);
+  uint32_t next = 0;
+  sendRun(store, 10000, kMacA, next, kMaxSamplesPerNode);
+  next += kMaxSamplesPerNode;
   TEST_ASSERT_EQUAL_UINT32(0, store.counts().capped);
-  // The oldest samples are the ones of A, so discarding makes room for A without any push-out.
+  // The next sample is pushed out as soon as the share is full.
+  sendUntilCappedOnce(store, 10000, kMacA, &next);
+  TEST_ASSERT_EQUAL_UINT(kMaxSamplesPerNode, store.size());
+  // Discarding makes room for exactly that many samples, and then the share is full again.
   store.discardOldest(10);
-  sendRun(store, 10000, kMacA, kMaxSamplesPerNode, 10);
-  TEST_ASSERT_EQUAL_UINT32(0, store.counts().capped);
-  // A removal by a rule, as the batch code does after an acknowledgement, makes room too.
-  store.removeWhere([](const StoredSample &sample) { return sample.powerDeciW < 100; });
-  sendRun(store, 10000, kMacA, kMaxSamplesPerNode + 10, 90);
-  TEST_ASSERT_EQUAL_UINT32(0, store.counts().capped);
-  // Expiry makes room as well.
+  sendRun(store, 10000, kMacA, next, 10);
+  next += 10;
+  TEST_ASSERT_EQUAL_UINT32(1, store.counts().capped);
+  sendUntilCappedOnce(store, 10000, kMacA, &next);
+  // A removal by a rule, as the batch code does after an acknowledgement.
+  const size_t removed = store.removeWhere([](const StoredSample &sample) { return (sample.powerDeciW % 4) == 0; });
+  TEST_ASSERT_TRUE(removed > 0);
+  sendRun(store, 10000, kMacA, next, removed);
+  next += static_cast<uint32_t>(removed);
+  TEST_ASSERT_EQUAL_UINT32(2, store.counts().capped);
+  sendUntilCappedOnce(store, 10000, kMacA, &next);
+  // Expiry. All samples are old now, so the share is empty and it takes the full share again before the next push-out.
   store.expire(10000 + kKeepSampleMs + 600);
   TEST_ASSERT_EQUAL_UINT(0, store.size());
-  sendRun(store, 10000 + kKeepSampleMs + 700, kMacA, 400, kMaxSamplesPerNode);
-  TEST_ASSERT_EQUAL_UINT32(0, store.counts().capped);
-  // A node that is forgotten starts with an empty share.
+  sendRun(store, 10000 + kKeepSampleMs + 700, kMacA, next, kMaxSamplesPerNode);
+  next += kMaxSamplesPerNode;
+  TEST_ASSERT_EQUAL_UINT32(3, store.counts().capped);
+  sendUntilCappedOnce(store, 10000 + kKeepSampleMs + 700, kMacA, &next);
+  // A node that is forgotten starts with an empty share, also when the same address comes back.
   store.forget(kMacA);
-  sendRun(store, 20000, kMacB, 0, 1);
-  uint8_t other[kMacSize];
-  makeMac(other, 500);
-  sendRun(store, 20000, other, 0, kMaxSamplesPerNode);
-  TEST_ASSERT_EQUAL_UINT32(0, store.counts().capped);
+  uint32_t again = 0;
+  sendRun(store, 20000, kMacA, again, kMaxSamplesPerNode);
+  again += kMaxSamplesPerNode;
+  TEST_ASSERT_EQUAL_UINT32(4, store.counts().capped);
+  sendUntilCappedOnce(store, 20000, kMacA, &again);
 }
 
 void test_a_sample_number_that_no_node_reaches_or_a_step_that_no_node_makes_is_dropped_and_the_count_stays() {
   SampleStore store;
-  TEST_ASSERT_EQUAL_UINT32(2, send(store, 1000, kMacA, kBoot, (const Sample[]){sampleWith(0), sampleWith(1), sampleWith(2)}, 3));
+  const Sample first[3] = {sampleWith(0), sampleWith(1), sampleWith(2)};
+  TEST_ASSERT_EQUAL_UINT32(2, send(store, 1000, kMacA, kBoot, first, 3));
   // A huge number is dropped and not acknowledged, and the next sample of the node is new as before.
   TEST_ASSERT_EQUAL_UINT32(2, sendOne(store, 1100, kMacA, kBoot, sampleWith(0xFFFFFFFEu)));
   TEST_ASSERT_EQUAL_UINT32(2, sendOne(store, 1100, kMacA, kBoot, sampleWith(kMaxSampleSeq + 1)));

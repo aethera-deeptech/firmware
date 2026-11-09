@@ -294,9 +294,9 @@ void test_one_address_gets_two_answers_in_a_second_and_its_refused_frames_do_not
   TEST_ASSERT_EQUAL_INT(kind(LinkEventKind::HelloAnswered), kind(hello(rig, noisy, kHelloWindowMs)));
 }
 
-void test_the_table_of_hello_senders_takes_more_addresses_than_it_has_places_and_the_limit_holds_for_the_last_ones() {
+void test_the_table_of_hello_senders_replaces_the_address_with_the_oldest_window_first() {
   Rig rig;
-  // Twenty addresses, one second apart, so the global limit never matters. Every one is answered, and the table replaces the oldest place.
+  // Twenty addresses, one second apart, so the global limit never matters. Every one is answered.
   for (uint8_t i = 1; i <= 20; i++) {
     TEST_ASSERT_EQUAL_INT(kind(LinkEventKind::HelloAnswered), kind(hello(rig, makeNode(i), static_cast<uint32_t>(i) * 1000u)));
   }
@@ -304,6 +304,31 @@ void test_the_table_of_hello_senders_takes_more_addresses_than_it_has_places_and
   TEST_ASSERT_EQUAL_INT(kind(LinkEventKind::HelloAnswered), kind(hello(rig, last, 20000 + 10)));
   TEST_ASSERT_EQUAL_INT(kind(LinkEventKind::HelloLimited), kind(hello(rig, last, 20000 + 20)));
   TEST_ASSERT_EQUAL_UINT(21, rig.radio.count);
+}
+
+void test_a_full_table_of_hello_senders_forgets_the_oldest_window_and_the_newest_keep_their_count() {
+  Rig rig;
+  const NodeSim first = makeNode(1);
+  // Address 1 uses its two answers, and the table fills with other addresses in the same second. An address that is refused by the global limit still
+  // takes a place in the table.
+  TEST_ASSERT_EQUAL_INT(kind(LinkEventKind::HelloAnswered), kind(hello(rig, makeNode(100), 0)));
+  TEST_ASSERT_EQUAL_INT(kind(LinkEventKind::HelloAnswered), kind(hello(rig, first, 900)));
+  TEST_ASSERT_EQUAL_INT(kind(LinkEventKind::HelloAnswered), kind(hello(rig, first, 901)));
+  TEST_ASSERT_EQUAL_INT(kind(LinkEventKind::HelloLimited), kind(hello(rig, first, 902)));
+  TEST_ASSERT_EQUAL_INT(kind(LinkEventKind::HelloAnswered), kind(hello(rig, makeNode(2), 910)));
+  TEST_ASSERT_EQUAL_INT(kind(LinkEventKind::HelloAnswered), kind(hello(rig, makeNode(3), 911)));
+  for (uint8_t i = 4; i <= 7; i++) {
+    TEST_ASSERT_EQUAL_INT(kind(LinkEventKind::HelloLimited), kind(hello(rig, makeNode(i), 916u + i)));
+  }
+  // The table has 8 places and is full now. Two more addresses take the place of the oldest windows, which are address 100 and then address 1.
+  TEST_ASSERT_EQUAL_INT(kind(LinkEventKind::HelloLimited), kind(hello(rig, makeNode(8), 930)));
+  TEST_ASSERT_EQUAL_INT(kind(LinkEventKind::HelloLimited), kind(hello(rig, makeNode(9), 931)));
+  // The window of address 1 is still open at 1010, but the hub forgot it, so it starts with a new count, which is the weakness that the documentation names.
+  TEST_ASSERT_EQUAL_INT(kind(LinkEventKind::HelloAnswered), kind(hello(rig, first, 1010)));
+  // The newest address keeps its count.
+  TEST_ASSERT_EQUAL_INT(kind(LinkEventKind::HelloAnswered), kind(hello(rig, makeNode(9), 1011)));
+  TEST_ASSERT_EQUAL_INT(kind(LinkEventKind::HelloAnswered), kind(hello(rig, makeNode(9), 1012)));
+  TEST_ASSERT_EQUAL_INT(kind(LinkEventKind::HelloLimited), kind(hello(rig, makeNode(9), 1013)));
 }
 
 void test_the_hello_limit_works_across_the_wrap_of_the_clock() {
@@ -987,7 +1012,8 @@ int main() {
   RUN_TEST(test_a_hello_is_answered_with_a_hello_ack_to_the_sender);
   RUN_TEST(test_the_hub_answers_five_hello_frames_in_a_second_and_then_stops);
   RUN_TEST(test_one_address_gets_two_answers_in_a_second_and_its_refused_frames_do_not_use_the_global_limit);
-  RUN_TEST(test_the_table_of_hello_senders_takes_more_addresses_than_it_has_places_and_the_limit_holds_for_the_last_ones);
+  RUN_TEST(test_the_table_of_hello_senders_replaces_the_address_with_the_oldest_window_first);
+  RUN_TEST(test_a_full_table_of_hello_senders_forgets_the_oldest_window_and_the_newest_keep_their_count);
   RUN_TEST(test_the_hello_limit_works_across_the_wrap_of_the_clock);
   RUN_TEST(test_a_radio_that_refuses_the_hello_ack_is_reported);
   RUN_TEST(test_frames_that_are_not_valid_or_not_for_the_hub_are_ignored);

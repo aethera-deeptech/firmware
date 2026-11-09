@@ -26,7 +26,7 @@ constexpr size_t kMaxSamplesPerNode = kSamplePoolSize / 8;
 
 // A sampleSeq counts from 0 at every boot of a node and grows by 1 for each sample. A node that samples every 10 seconds needs about 680 years to pass the
 // first limit, so a larger value is a fault and is not stored. The second limit is the largest step that the hub accepts within one boot of a node, which is
-// about 1.9 years of samples every 10 seconds, so a node that was out of reach for months still counts as new. A larger step is a fault too, and it is not
+// about 5.3 years of samples every 10 seconds, so a node that was out of reach for months still counts as new. A larger step is a fault too, and it is not
 // stored and not taken as the new count, so one wrong number cannot make every later sample of the node look like a repeat.
 constexpr uint32_t kMaxSampleSeq = 0x7FFFFFFFu;
 constexpr uint32_t kMaxSampleSeqStep = 1UL << 24;
@@ -75,7 +75,7 @@ struct StoredSample {
 struct SampleCounts {
   uint32_t stored;
   uint32_t repeats;     // samples whose sampleSeq was not new
-  uint32_t rejected;    // samples that the backend would refuse (no power, power out of range, older than a day, sampleSeq of all bits)
+  uint32_t rejected;    // samples that were dropped for no power, a power out of range, an age above a day, or a sampleSeq of all bits, above kMaxSampleSeq or a step above kMaxSampleSeqStep
   uint32_t overflowed;  // samples that were dropped because the pool was full
   uint32_t expired;     // samples that were held too long, see expire()
   uint32_t refused;     // frames from a node that the table had no room for
@@ -91,7 +91,8 @@ class SampleStore : public SampleSink {
 
   // As SampleSink says. A sample is new when its sampleSeq is higher than the last one that the store took for the same boot of the node, and the first sample
   // after a start of the hub, or of a new boot of the node, is new. A sample that is a repeat, or that is dropped, still counts as received, so a gap or a bad
-  // sample never stops the ACK. Returns the highest sampleSeq that the store holds for the node, or kNoSampleSeq when the table has no room for the node, or
+  // sample never stops the ACK. The exception is a sampleSeq above kMaxSampleSeq or above the step kMaxSampleSeqStep, which is dropped and not counted as
+  // received, so the count of the node stays as it was. Returns the highest sampleSeq that the store holds for the node, or kNoSampleSeq when the table has no room for the node, or
   // when every sample of the frame has the sampleSeq of all bits.
   uint32_t onSamples(uint32_t nowMs, const uint8_t mac[kMacSize], uint32_t nodeBootId, const Sample *samples, size_t count) override;
 

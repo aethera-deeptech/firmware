@@ -19,6 +19,9 @@ int SampleStore::findNode(const uint8_t mac[kMacSize]) const {
   return -1;
 }
 
+// This looks at the whole pool and moves what it keeps, which takes about half a millisecond with a full pool (an estimate, not measured). It runs for every
+// sample of a node that is at its share, so a node that floods costs that for each sample, and a node that is only slow in a long outage costs it once in
+// a sample interval. The cost is accepted, because the single task has the time and the alternative is a second list for each node.
 void SampleStore::dropOldestOf(uint8_t node) {
   bool done = false;
   removeWhere([&done, node](const StoredSample &sample) -> bool {
