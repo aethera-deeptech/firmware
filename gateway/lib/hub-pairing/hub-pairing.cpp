@@ -97,6 +97,7 @@ RequestResult HubPairing::onPairRequest(uint32_t nowMs, const uint8_t mac[kMacSi
 FirstFrameResult HubPairing::onFrame(uint32_t nowMs, const uint8_t mac[kMacSize], const uint8_t *frame, size_t frameLength,
                                      FirstFrame *out) {
   out->pairResult = PairResult::Ok;
+  memset(&out->header, 0, sizeof(out->header));
   out->payloadLength = 0;
   memset(out->payload, 0, sizeof(out->payload));
 

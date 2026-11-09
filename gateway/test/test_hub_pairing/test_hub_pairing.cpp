@@ -558,6 +558,96 @@ void test_update_wipes_the_pairing_when_the_time_is_over_and_the_owner_can_start
   TEST_ASSERT_TRUE(memcmp(key, second, kPairingKeySize) != 0);
 }
 
+void test_a_repeated_request_from_the_pending_node_is_busy_and_keeps_the_first_key() {
+  Rig rig;
+  const NodeSim node = makeNode(1);
+  uint8_t key[kPairingKeySize];
+  startPairing(rig, node, 0, key);
+  RequestOutcome outcome;
+  TEST_ASSERT_EQUAL_INT(result(RequestResult::Busy), result(ask(rig, node, 100, &outcome)));
+  TEST_ASSERT_EQUAL_UINT8(2, rig.knobs.next);  // no second key pair was made
+  uint8_t frame[kMaxFrameSize];
+  const size_t size = sealed(key, FrameType::Telemetry, 1, 0, frame, sizeof(frame));
+  FirstFrame out;
+  TEST_ASSERT_EQUAL_INT(result(FirstFrameResult::Committed), result(rig.pairing.onFrame(200, node.mac, frame, size, &out)));
+  TEST_ASSERT_EQUAL_UINT8_ARRAY(key, rig.registry.keyOf(node.mac), kPairingKeySize);
+}
+
+void test_a_node_that_was_paired_during_the_wait_makes_the_first_frame_fail() {
+  Rig rig;
+  const NodeSim node = makeNode(1);
+  uint8_t key[kPairingKeySize];
+  startPairing(rig, node, 0, key);
+  const uint8_t other[kNodeKeySize] = {7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7};
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(PairResult::Ok), static_cast<int>(rig.registry.pair(kKindPlug, node.mac, other)));
+  uint8_t frame[kMaxFrameSize];
+  const size_t size = sealed(key, FrameType::Telemetry, 1, 0, frame, sizeof(frame));
+  FirstFrame out;
+  TEST_ASSERT_EQUAL_INT(result(FirstFrameResult::PairFailed), result(rig.pairing.onFrame(100, node.mac, frame, size, &out)));
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(PairResult::AlreadyPaired), static_cast<int>(out.pairResult));
+  TEST_ASSERT_EQUAL_UINT8_ARRAY(other, rig.registry.keyOf(node.mac), kNodeKeySize);
+  TEST_ASSERT_FALSE(rig.pairing.pending());
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(WindowState::Closed), static_cast<int>(rig.window.state()));
+}
+
+void test_bad_frames_do_not_extend_the_wait() {
+  Rig rig;
+  const NodeSim node = makeNode(1);
+  uint8_t key[kPairingKeySize];
+  startPairing(rig, node, 0, key);
+  uint8_t frame[kMaxFrameSize];
+  const size_t size = sealed(key, FrameType::Telemetry, 1, 0, frame, sizeof(frame));
+  uint8_t bad[kMaxFrameSize];
+  memcpy(bad, frame, size);
+  bad[kHeaderSize] ^= 0x01;
+  FirstFrame out;
+  const uint32_t times[3] = {10000, 20000, kPairingPendingMs - 1};
+  for (size_t i = 0; i < 3; i++) {
+    TEST_ASSERT_EQUAL_INT(result(FirstFrameResult::BadFrame), result(rig.pairing.onFrame(times[i], node.mac, bad, size, &out)));
+  }
+  TEST_ASSERT_EQUAL_INT(result(FirstFrameResult::NotPending), result(rig.pairing.onFrame(kPairingPendingMs, node.mac, frame, size, &out)));
+  TEST_ASSERT_FALSE(rig.registry.isPaired(node.mac));
+}
+
+void test_a_request_after_the_wait_ended_finds_the_window_closed_and_not_busy() {
+  Rig rig;
+  uint8_t key[kPairingKeySize];
+  startPairing(rig, makeNode(1), 0, key);
+  RequestOutcome outcome;
+  TEST_ASSERT_EQUAL_INT(result(RequestResult::NotOpen), result(ask(rig, makeNode(2), kPairingPendingMs, &outcome)));
+  TEST_ASSERT_FALSE(rig.pairing.pending());
+}
+
+void test_the_times_work_across_the_wrap_of_the_clock() {
+  Rig rig;
+  const NodeSim node = makeNode(1);
+  rig.window.press(0xFFFFFF00u);
+  RequestOutcome outcome;
+  TEST_ASSERT_EQUAL_INT(result(RequestResult::Accepted), result(ask(rig, node, 0xFFFFFF10u, &outcome)));
+  uint8_t key[kPairingKeySize];
+  nodeKey(rig, node, outcome, key);
+  uint8_t frame[kMaxFrameSize];
+  const size_t size = sealed(key, FrameType::Telemetry, 1, 0, frame, sizeof(frame));
+  FirstFrame out;
+  TEST_ASSERT_EQUAL_INT(result(FirstFrameResult::Committed), result(rig.pairing.onFrame(0x00000100u, node.mac, frame, size, &out)));
+}
+
+void test_a_result_that_is_not_committed_clears_the_old_header_and_payload() {
+  Rig rig;
+  const NodeSim node = makeNode(1);
+  uint8_t key[kPairingKeySize];
+  startPairing(rig, node, 0, key);
+  uint8_t frame[kMaxFrameSize];
+  const size_t size = sealed(key, FrameType::Telemetry, 5, 9, frame, sizeof(frame));
+  FirstFrame out;
+  TEST_ASSERT_EQUAL_INT(result(FirstFrameResult::Committed), result(rig.pairing.onFrame(10, node.mac, frame, size, &out)));
+  TEST_ASSERT_EQUAL_UINT32(5, out.header.bootId);
+  TEST_ASSERT_EQUAL_INT(result(FirstFrameResult::NotPending), result(rig.pairing.onFrame(20, node.mac, frame, size, &out)));
+  TEST_ASSERT_EQUAL_UINT32(0, out.header.bootId);
+  TEST_ASSERT_EQUAL_UINT32(0, out.header.counter);
+  TEST_ASSERT_EQUAL_UINT(0, out.payloadLength);
+}
+
 int main() {
   UNITY_BEGIN();
   RUN_TEST(test_a_request_in_an_open_window_is_accepted_and_names_the_node);
@@ -582,5 +672,11 @@ int main() {
   RUN_TEST(test_a_boot_value_that_cannot_be_stored_leaves_the_node_paired_without_an_ack);
   RUN_TEST(test_close_wipes_the_pairing_and_closes_the_window);
   RUN_TEST(test_update_wipes_the_pairing_when_the_time_is_over_and_the_owner_can_start_again);
+  RUN_TEST(test_a_repeated_request_from_the_pending_node_is_busy_and_keeps_the_first_key);
+  RUN_TEST(test_a_node_that_was_paired_during_the_wait_makes_the_first_frame_fail);
+  RUN_TEST(test_bad_frames_do_not_extend_the_wait);
+  RUN_TEST(test_a_request_after_the_wait_ended_finds_the_window_closed_and_not_busy);
+  RUN_TEST(test_the_times_work_across_the_wrap_of_the_clock);
+  RUN_TEST(test_a_result_that_is_not_committed_clears_the_old_header_and_payload);
   return UNITY_END();
 }

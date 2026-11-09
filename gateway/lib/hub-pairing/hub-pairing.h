@@ -11,6 +11,9 @@
 
 namespace wattlink {
 
+// The key in a PAIR_REQUEST and the key of the exchange are the same 32 bytes, and the code passes one where the other is expected.
+static_assert(kPublicKeyBytes == kPublicKeySize, "the public key of the frames is the public key of the exchange");
+
 // The steps of the hub in a pairing, as the section "Pairing and keys" of docs/espnow-protocol.md describes them. The class does the logic only.
 // The radio, the display and the flash are not here, so the same code runs on the host in the tests and on the chip.
 // One task must call all of it. Never call it from the ESP-NOW receive callback, because the registry writes flash and the crypto needs a big stack.
@@ -54,6 +57,7 @@ enum class FirstFrameResult : uint8_t {
   PairedNoFrame,  // the node is paired, but the frame was not accepted (the boot value could not be stored), so no ACK, and the node sends again
 };
 
+// Filled by onFrame. The header and the payload hold something only when the result is Committed, and they are cleared for every other result.
 struct FirstFrame {
   Header header;
   uint8_t payload[kMaxPayloadSize];
@@ -65,6 +69,10 @@ class HubPairing {
  public:
   HubPairing(PairingWindow &window, NodeRegistry &registry, const HubCrypto &crypto, const uint8_t hubMac[kMacSize]);
   ~HubPairing();
+
+  // A copy would keep a second copy of the pending key that close() and update() cannot wipe.
+  HubPairing(const HubPairing &) = delete;
+  HubPairing &operator=(const HubPairing &) = delete;
 
   // A PAIR_REQUEST arrived from the radio address mac. The payload is the payload of the frame. The caller sends PAIR_ACCEPT for Accepted.
   // Nothing is stored in the registry yet. The window moves to the state Pairing, and the hub waits for the first TELEMETRY frame.
