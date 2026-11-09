@@ -9,6 +9,7 @@ enum class SelfTestResult {
   OpenFailed,
   TamperAccepted,
   X25519Failed,
+  Sha256Failed,
 };
 
 // Runs the known answers of the host tests (RFC 5869 case 1 and a COMMAND frame that an independent AES-GCM made) and the X25519 vectors of

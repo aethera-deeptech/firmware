@@ -2,12 +2,17 @@
 
 #include <mbedtls/gcm.h>
 #include <mbedtls/md.h>
+#include <mbedtls/sha256.h>
 
 namespace wattlink {
 
 bool mbedtlsHmacSha256(void *, const uint8_t *key, size_t keyLength, const uint8_t *data, size_t dataLength, uint8_t out[kSha256Size]) {
   const mbedtls_md_info_t *info = mbedtls_md_info_from_type(MBEDTLS_MD_SHA256);
   return info != nullptr && mbedtls_md_hmac(info, key, keyLength, data, dataLength, out) == 0;
+}
+
+bool mbedtlsSha256(void *, const uint8_t *data, size_t length, uint8_t out[kSha256Size]) {
+  return mbedtls_sha256_ret(data, length, out, 0) == 0;
 }
 
 bool mbedtlsAesGcmSeal(void *, const uint8_t key[kAesKeySize], const uint8_t nonce[kNonceSize], const uint8_t *aad, size_t aadLength,

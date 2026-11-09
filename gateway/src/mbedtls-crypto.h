@@ -11,6 +11,9 @@ namespace wattlink {
 bool mbedtlsHmacSha256(void *context, const uint8_t *key, size_t keyLength, const uint8_t *data, size_t dataLength,
                        uint8_t out[kSha256Size]);
 
+// SHA-256 of a text, for the hash of the API key that the hub gives the backend at the enrollment. It matches Sha256Fn of the backend client.
+bool mbedtlsSha256(void *context, const uint8_t *data, size_t length, uint8_t out[kSha256Size]);
+
 bool mbedtlsAesGcmSeal(void *context, const uint8_t key[kAesKeySize], const uint8_t nonce[kNonceSize], const uint8_t *aad, size_t aadLength,
                        const uint8_t *plain, size_t length, uint8_t *cipher, uint8_t tag[kTagSize]);
 
