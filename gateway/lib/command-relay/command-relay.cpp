@@ -210,7 +210,8 @@ SubmitResult CommandRelay::submit(uint32_t nowMs, uint32_t serverTime, const cha
   }
 
   // A slot of the log could not be read, so this id may be a command that ran before the restart. Running a switch on again could undo an overload cut
-  // of the plug. A switch off does no harm when it runs twice, so it goes on. The backend lists the command again, and it is taken when the hold ends.
+  // of the plug. A switch off does no harm when it runs twice, so it goes on. The backend lists the command again until it expires, so a switch on can
+  // expire before the hold ends, and then it is never taken.
   if (on && logged < 0 && unreadableSlots() > 0) {
     return SubmitResult::LogUnreadable;
   }
