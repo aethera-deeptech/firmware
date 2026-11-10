@@ -1,18 +1,22 @@
 #include <Arduino.h>
 #include <esp_system.h>
+#include <nvs.h>
 #include <new>
 
 #include "batch-builder.h"
 #include "boot-counter.h"
+#include "command-relay.h"
 #include "config.h"
 #include "crypto-selftest.h"
 #include "espnow-radio.h"
+#include "flash-command-log.h"
 #include "hub-button.h"
 #include "hub-link.h"
 #include "hub-pairing.h"
 #include "mbedtls-crypto.h"
 #include "mbedtls-x25519.h"
 #include "node-registry.h"
+#include "nvs-command-blob-store.h"
 #include "nvs-counter-store.h"
 #include "nvs-record-store.h"
 #include "nvs-store.h"
@@ -56,6 +60,12 @@ alignas(wattlink::HubPairing) static uint8_t hubPairingMemory[sizeof(wattlink::H
 alignas(wattlink::HubLink) static uint8_t hubLinkMemory[sizeof(wattlink::HubLink)];
 static wattlink::HubPairing *hubPairing = nullptr;
 static wattlink::HubLink *hubLink = nullptr;
+// The relay of the commands of the backend. It sends a command to its plug with the next frame of that plug, so it needs the link layer and the boot
+// number, and it is built next to them. The backend client does not hand it commands yet, so for now it only reads its log and follows the frames.
+static wattlink::NvsCommandBlobStore commandFlash;
+static wattlink::FlashCommandLog commandLog(commandFlash);
+alignas(wattlink::CommandRelay) static uint8_t commandRelayMemory[sizeof(wattlink::CommandRelay)];
+static wattlink::CommandRelay *commandRelay = nullptr;
 // The frames that one pass of loop() takes from the queue. HubLink writes flash for a frame, so the button and the Wi-Fi watch must still get their turn.
 constexpr int kFramesPerPass = 4;
 // The time of the last expiry of old samples. The pool drops a sample after about 24 hours, and this keeps the clock reads far from the wrap.
@@ -129,6 +139,16 @@ static void logLinkEvent(const wattlink::LinkEvent &event) {
     case wattlink::LinkEventKind::PairingFailed:
       Serial.printf("Link: pairing failed, reason %d\n", static_cast<int>(event.refusal));
       break;
+    case wattlink::LinkEventKind::ResultReceived: {
+      // The event holds the MAC and not the id, and a line names a node by its id.
+      char id[wattlink::kNodeIdSize];
+      if (!nodes.nodeId(event.mac, id)) {
+        strcpy(id, "?");
+      }
+      Serial.printf("Link: %s answered command number %u, %s\n", id, static_cast<unsigned>(event.commandNumber),
+                    event.commandOk ? "switched" : "did not switch");
+      break;
+    }
     case wattlink::LinkEventKind::StoreFailed:
       Serial.println("Link: a frame was dropped because the flash refused the boot value");
       break;
@@ -148,7 +168,13 @@ static void serviceRadio(uint32_t now) {
     if (hubLink != nullptr) {
       // The clock is read for each frame, because a frame before this one may have waited for a send, and the time of a frame is the time of its
       // arrival for the window, the limit of HELLO answers and the capture time of its samples.
-      logLinkEvent(hubLink->onFrame(millis(), frame.mac, frame.data, frame.length));
+      const uint32_t arrivedMs = millis();
+      const wattlink::LinkEvent event = hubLink->onFrame(arrivedMs, frame.mac, frame.data, frame.length);
+      logLinkEvent(event);
+      // A frame of a plug is the moment to send its command, and a RESULT closes the command.
+      if (commandRelay != nullptr) {
+        commandRelay->onEvent(arrivedMs, event);
+      }
     }
   }
   if (hubPairing != nullptr) {
@@ -157,6 +183,9 @@ static void serviceRadio(uint32_t now) {
       hubPairing->close();
     }
     hubPairing->update(millis());
+  }
+  if (commandRelay != nullptr) {
+    commandRelay->update(now);
   }
   if (now - lastExpireMs >= kExpireEveryMs) {
     lastExpireMs = now;
@@ -226,8 +255,24 @@ void setup() {
     hubPairing = new (hubPairingMemory) wattlink::HubPairing(pairing, nodes, crypto, hubMac, hubBootId);
     hubLink = new (hubLinkMemory) wattlink::HubLink(*hubPairing, nodes, radio, sampleStore, crypto);
     Serial.println("Link: ready");
+    // The relay reads its log once. A slot that the flash cannot read is held, and a switch on waits while one exists. The line says how many.
+    commandRelay = new (commandRelayMemory) wattlink::CommandRelay(*hubLink, nodes, commandLog, hubBootId);
+    const size_t held = commandRelay->load();
+    Serial.printf("Commands: %u records held, %u slots unreadable (%lu damaged, %lu not readable by the flash)\n", static_cast<unsigned>(held),
+                  static_cast<unsigned>(commandRelay->unreadableSlots()), static_cast<unsigned long>(commandLog.damaged()),
+                  static_cast<unsigned long>(commandLog.failedReads()));
   } else {
     Serial.println("Link: off, the hub does not take frames");
+  }
+  // The flash of the settings, the nodes and the command log shares one NVS partition of 20 KB. This line shows how full it is, so a log that grows
+  // can be seen before a write fails.
+  nvs_stats_t nvsStats;
+  if (nvs_get_stats(nullptr, &nvsStats) == ESP_OK) {
+    Serial.printf("NVS: %u of %u entries used, %u free, %u namespaces\n", static_cast<unsigned>(nvsStats.used_entries),
+                  static_cast<unsigned>(nvsStats.total_entries), static_cast<unsigned>(nvsStats.free_entries),
+                  static_cast<unsigned>(nvsStats.namespace_count));
+  } else {
+    Serial.println("NVS: the statistics could not be read");
   }
   // The heap is read before the radio starts and after it, to see what is left for the backend client. A hub that holds its pool as a static
   // object has the 58 KB in the figure of the static memory and not in the heap.
