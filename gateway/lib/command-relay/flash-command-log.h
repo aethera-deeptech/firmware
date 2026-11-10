@@ -16,6 +16,7 @@ namespace wattlink {
 //   bytes 8-43   the id of the command, 36 bytes, padded with zero
 //   bytes 44-47  CRC-32 of bytes 0 to 43
 constexpr size_t kCommandBlobSize = 48;
+// A later layout needs a reader for this one, or every old slot is unreadable at the first start after an update, and the relay then holds a switch on.
 constexpr uint8_t kCommandBlobVersion = 1;
 
 // CRC-32 as zlib and Ethernet use it, so the known answer for the text "123456789" is 0xCBF43926.
@@ -38,13 +39,13 @@ class CommandBlobStore {
   virtual bool write(size_t slot, const uint8_t in[kCommandBlobSize]) = 0;
 };
 
-// The log of the relay on top of a blob store. A slot that was never written, that cannot be read, or whose bytes do not pass the check counts as
-// free, as CommandLog says. The two counters tell the caller that a slot was lost, so the hub can print it.
+// The log of the relay on top of a blob store. A slot that was never written is Free. A slot that the flash cannot read, also after one more try, or
+// whose bytes do not pass the check is Unreadable, as CommandLog says. The two counters tell the caller how many slots were lost, so the hub can print it.
 class FlashCommandLog : public CommandLog {
  public:
   explicit FlashCommandLog(CommandBlobStore &store) : store_(store), damaged_(0), failedReads_(0) {}
 
-  bool read(size_t slot, CommandRecord *out) override;
+  LogRead read(size_t slot, CommandRecord *out) override;
   bool write(size_t slot, const CommandRecord &record) override;
 
   // Slots that held bytes which did not pass the check.

@@ -44,26 +44,32 @@ class FakeSender : public CommandSender {
 
 class FakeLog : public CommandLog {
  public:
-  bool read(size_t slot, CommandRecord *out) override {
+  LogRead read(size_t slot, CommandRecord *out) override {
+    if (unreadable[slot]) {
+      return LogRead::Unreadable;
+    }
     if (!present[slot]) {
-      return false;
+      return LogRead::Free;
     }
     *out = slots[slot];
-    return true;
+    return LogRead::Record;
   }
 
   bool write(size_t slot, const CommandRecord &record) override {
     writes++;
-    if (failWrites) {
+    if (failWrites || failWriteSlot == static_cast<int>(slot)) {
       return false;
     }
     slots[slot] = record;
     present[slot] = true;
+    unreadable[slot] = false;
     return true;
   }
 
   CommandRecord slots[kCommandLogSlots] = {};
   bool present[kCommandLogSlots] = {};
+  bool unreadable[kCommandLogSlots] = {};
+  int failWriteSlot = -1;
   int writes = 0;
   bool failWrites = false;
 };
@@ -380,7 +386,7 @@ void test_a_command_that_ran_before_a_restart_only_gets_its_result_again() {
   TEST_ASSERT_EQUAL_UINT(1, rig.sender.count);
 }
 
-void test_load_skips_slots_that_cannot_be_read_or_are_damaged_and_a_record_that_has_ended_is_forgotten() {
+void test_load_holds_slots_that_cannot_be_read_or_are_damaged_and_a_record_that_has_ended_is_forgotten() {
   Rig rig;
   char plug[kNodeIdSize];
   pairPlug(rig, 1, plug);
@@ -406,12 +412,143 @@ void test_load_skips_slots_that_cannot_be_read_or_are_damaged_and_a_record_that_
   strcpy(badId.id, "a b");
   rig.log.slots[3] = badId;
   rig.log.present[3] = true;
+  rig.log.unreadable[4] = true;
   TEST_ASSERT_EQUAL_UINT(2, rig.relay.load());
+  // The state that is not known, the id that is not safe and the slot that the flash cannot read are all kept as used.
+  TEST_ASSERT_EQUAL_UINT(3, rig.relay.unreadableSlots());
   // The record of "live-1" is still alive for the service, so it only gives its result again.
   TEST_ASSERT_EQUAL_INT(result(SubmitResult::AlreadyRan), result(submit(rig, 0, "live-1", plug)));
-  // The record of "old-1" ended longer ago than a plug remembers a number, so the id is forgotten and a command with it is new.
-  TEST_ASSERT_EQUAL_INT(result(SubmitResult::Queued), result(submit(rig, 0, "old-1", plug)));
-  TEST_ASSERT_EQUAL_INT(result(SubmitResult::Queued), result(submit(rig, 0, "bad-1", plug)));
+  // The record of "old-1" ended longer ago than a plug remembers a number, so the id is forgotten. A switch on with it waits, because a slot that is
+  // lost may be that command. A switch off is queued.
+  TEST_ASSERT_EQUAL_INT(result(SubmitResult::LogUnreadable), result(submit(rig, 0, "old-1", plug)));
+  TEST_ASSERT_EQUAL_INT(result(SubmitResult::Queued), result(submit(rig, 0, "old-1", plug, false)));
+}
+
+void test_an_unreadable_slot_is_kept_as_used_and_a_switch_on_for_an_unknown_id_waits_until_the_hold_ends() {
+  Rig rig;
+  char plug[kNodeIdSize];
+  pairPlug(rig, 1, plug);
+  rig.log.unreadable[7] = true;
+  TEST_ASSERT_EQUAL_UINT(0, rig.relay.load());
+  TEST_ASSERT_EQUAL_UINT(1, rig.relay.unreadableSlots());
+  // The first answer of the service starts the count.
+  TEST_ASSERT_EQUAL_INT(result(SubmitResult::LogUnreadable), result(rig.relay.submit(0, kServerTime, "cmd-1", plug, true, kExpires)));
+  TEST_ASSERT_EQUAL_UINT(0, rig.relay.pendingCount());
+  TEST_ASSERT_EQUAL_UINT(0, rig.relay.resultCount());
+  TEST_ASSERT_EQUAL_INT(0, rig.log.writes);
+  // A switch off for the same id goes on.
+  TEST_ASSERT_EQUAL_INT(result(SubmitResult::Queued), result(rig.relay.submit(0, kServerTime, "cmd-1", plug, false, kExpires)));
+  // One second before the end of the hold the switch on is still refused, and at the end the slot is free again.
+  const uint32_t before = kServerTime + kUnreadableHoldSeconds - 1;
+  TEST_ASSERT_EQUAL_INT(result(SubmitResult::LogUnreadable), result(rig.relay.submit(0, before, "cmd-2", plug, true, before + 100)));
+  TEST_ASSERT_EQUAL_UINT(1, rig.relay.unreadableSlots());
+  const uint32_t after = kServerTime + kUnreadableHoldSeconds;
+  TEST_ASSERT_EQUAL_INT(result(SubmitResult::Queued), result(rig.relay.submit(0, after, "cmd-2", plug, true, after + 100)));
+  TEST_ASSERT_EQUAL_UINT(0, rig.relay.unreadableSlots());
+}
+
+void test_a_switch_on_for_an_id_that_the_log_knows_is_not_refused_when_another_slot_is_unreadable() {
+  Rig rig;
+  char plug[kNodeIdSize];
+  pairPlug(rig, 1, plug);
+  CommandRecord live = {};
+  strcpy(live.id, "live-1");
+  live.number = 0x0A02;
+  live.state = CommandState::Sent;
+  live.expiresAt = kServerTime + 100;
+  rig.log.slots[1] = live;
+  rig.log.present[1] = true;
+  rig.log.unreadable[5] = true;
+  TEST_ASSERT_EQUAL_UINT(1, rig.relay.load());
+  // The record is readable, so the relay knows that the command was sent and sends it again with the same number.
+  TEST_ASSERT_EQUAL_INT(result(SubmitResult::Resumed), result(submit(rig, 0, "live-1", plug)));
+}
+
+void test_an_unreadable_slot_is_never_written_and_does_not_count_as_room() {
+  Rig rig;
+  char plug1[kNodeIdSize];
+  char plug2[kNodeIdSize];
+  pairPlug(rig, 1, plug1);
+  pairPlug(rig, 2, plug2);
+  for (size_t i = 0; i < kCommandLogSlots - 1; i++) {
+    rig.log.unreadable[i] = true;
+  }
+  TEST_ASSERT_EQUAL_UINT(0, rig.relay.load());
+  TEST_ASSERT_EQUAL_UINT(kCommandLogSlots - 1, rig.relay.unreadableSlots());
+  // One slot is left. The first command gets it. The second switch off finds no slot and is taken anyway, because the fault took the room.
+  TEST_ASSERT_EQUAL_INT(result(SubmitResult::Queued), result(submit(rig, 0, "off-1", plug1, false)));
+  TEST_ASSERT_EQUAL_INT(result(SubmitResult::Queued), result(submit(rig, 0, "off-2", plug2, false)));
+  TEST_ASSERT_EQUAL_INT(result(SubmitResult::LogUnreadable), result(submit(rig, 0, "on-3", plug1, true)));
+  rig.relay.onEvent(1000, telemetry(1, 10));
+  TEST_ASSERT_EQUAL_INT(1, rig.log.writes);
+  TEST_ASSERT_TRUE(rig.log.present[kCommandLogSlots - 1]);
+  for (size_t i = 0; i < kCommandLogSlots - 1; i++) {
+    TEST_ASSERT_FALSE(rig.log.present[i]);
+  }
+  // The second command has no record, and its frame goes out all the same. The failure is counted.
+  rig.relay.onEvent(1100, telemetry(2, 10));
+  TEST_ASSERT_EQUAL_UINT(2, rig.sender.count);
+  TEST_ASSERT_EQUAL_UINT32(1, rig.relay.logFailures());
+}
+
+void test_a_switch_off_is_taken_when_every_slot_is_unreadable_and_a_switch_on_is_not() {
+  Rig rig;
+  char plug[kNodeIdSize];
+  pairPlug(rig, 1, plug);
+  for (size_t i = 0; i < kCommandLogSlots; i++) {
+    rig.log.unreadable[i] = true;
+  }
+  TEST_ASSERT_EQUAL_UINT(0, rig.relay.load());
+  TEST_ASSERT_EQUAL_UINT(kCommandLogSlots, rig.relay.unreadableSlots());
+  TEST_ASSERT_EQUAL_INT(result(SubmitResult::LogUnreadable), result(submit(rig, 0, "on-1", plug, true)));
+  TEST_ASSERT_EQUAL_INT(result(SubmitResult::Queued), result(submit(rig, 0, "off-1", plug, false)));
+  rig.relay.onEvent(1000, telemetry(1, 10));
+  TEST_ASSERT_EQUAL_UINT(1, rig.sender.count);
+  TEST_ASSERT_EQUAL_UINT8(0, rig.sender.calls[0].action);
+}
+
+void test_the_end_of_the_hold_writes_a_free_record_so_the_next_start_does_not_hold_again() {
+  Rig rig;
+  rig.log.unreadable[2] = true;
+  rig.log.unreadable[9] = true;
+  rig.relay.load();
+  rig.relay.forgetEnded(kServerTime);
+  TEST_ASSERT_EQUAL_INT(0, rig.log.writes);
+  rig.relay.forgetEnded(kServerTime + kUnreadableHoldSeconds);
+  TEST_ASSERT_EQUAL_UINT(0, rig.relay.unreadableSlots());
+  TEST_ASSERT_EQUAL_INT(2, rig.log.writes);
+  // The same flash, read by a relay of the next start.
+  CommandRelay restarted(rig.sender, rig.registry, rig.log, 0x206);
+  TEST_ASSERT_EQUAL_UINT(0, restarted.load());
+  TEST_ASSERT_EQUAL_UINT(0, restarted.unreadableSlots());
+}
+
+void test_a_slot_that_cannot_be_written_does_not_hold_back_a_switch_on_when_another_slot_is_free() {
+  Rig rig;
+  char plug[kNodeIdSize];
+  pairPlug(rig, 1, plug);
+  rig.log.failWriteSlot = 0;
+  TEST_ASSERT_EQUAL_INT(result(SubmitResult::Queued), result(submit(rig, 0, "on-1", plug, true)));
+  rig.relay.onEvent(1000, telemetry(1, 10));
+  // The first slot refused the record, the second took it, and the switch on went out.
+  TEST_ASSERT_EQUAL_UINT(1, rig.sender.count);
+  TEST_ASSERT_EQUAL_UINT32(1, rig.relay.logFailures());
+  TEST_ASSERT_FALSE(rig.log.present[0]);
+  TEST_ASSERT_TRUE(rig.log.present[1]);
+  TEST_ASSERT_EQUAL_STRING("on-1", rig.log.slots[1].id);
+}
+
+void test_the_hold_of_an_unreadable_slot_is_counted_from_the_first_time_of_the_service_also_without_a_command() {
+  Rig rig;
+  rig.log.unreadable[0] = true;
+  rig.relay.load();
+  // An answer with no command still starts the count, and a time before it does not end it.
+  rig.relay.forgetEnded(kServerTime);
+  rig.relay.forgetEnded(kServerTime - 5);
+  rig.relay.forgetEnded(kServerTime + kUnreadableHoldSeconds - 1);
+  TEST_ASSERT_EQUAL_UINT(1, rig.relay.unreadableSlots());
+  rig.relay.forgetEnded(kServerTime + kUnreadableHoldSeconds);
+  TEST_ASSERT_EQUAL_UINT(0, rig.relay.unreadableSlots());
 }
 
 void test_numbers_count_from_the_boot_number_and_skip_the_ones_that_are_still_held() {
@@ -450,7 +587,8 @@ void test_a_flash_that_refuses_the_record_holds_back_a_switch_on_but_not_a_switc
   submit(rig, 0, "cmd-off", other, false);
   rig.relay.onEvent(1000, telemetry(1, 10));
   TEST_ASSERT_EQUAL_UINT(0, rig.sender.count);
-  TEST_ASSERT_EQUAL_UINT32(1, rig.relay.logFailures());
+  // The record is tried in two slots, and both writes are counted.
+  TEST_ASSERT_EQUAL_UINT32(2, rig.relay.logFailures());
   // Nothing is resent for a command that never went out, and the next frame tries again.
   rig.relay.update(1000 + 2 * kCommandResendMs);
   TEST_ASSERT_EQUAL_UINT(0, rig.sender.count);
@@ -463,11 +601,11 @@ void test_a_flash_that_refuses_the_record_holds_back_a_switch_on_but_not_a_switc
   rig.relay.onEvent(21000, telemetry(2, 3));
   TEST_ASSERT_EQUAL_UINT(2, rig.sender.count);
   TEST_ASSERT_EQUAL_UINT8(0, rig.sender.calls[1].action);
-  TEST_ASSERT_EQUAL_UINT32(2, rig.relay.logFailures());
+  TEST_ASSERT_EQUAL_UINT32(4, rig.relay.logFailures());
   // The result is still reported when its record cannot be written.
   rig.relay.onEvent(22000, resultEvent(2, rig.sender.calls[1].number, true));
   TEST_ASSERT_EQUAL_UINT(1, rig.relay.resultCount());
-  TEST_ASSERT_EQUAL_UINT32(3, rig.relay.logFailures());
+  TEST_ASSERT_EQUAL_UINT32(6, rig.relay.logFailures());
 }
 
 void test_a_radio_that_refuses_the_frame_does_not_stop_the_resends() {
@@ -806,7 +944,14 @@ int main() {
   RUN_TEST(test_a_command_for_an_unknown_node_or_with_a_bad_id_is_refused_without_a_change);
   RUN_TEST(test_a_command_that_was_sent_before_a_restart_is_sent_again_with_the_same_number);
   RUN_TEST(test_a_command_that_ran_before_a_restart_only_gets_its_result_again);
-  RUN_TEST(test_load_skips_slots_that_cannot_be_read_or_are_damaged_and_a_record_that_has_ended_is_forgotten);
+  RUN_TEST(test_load_holds_slots_that_cannot_be_read_or_are_damaged_and_a_record_that_has_ended_is_forgotten);
+  RUN_TEST(test_an_unreadable_slot_is_kept_as_used_and_a_switch_on_for_an_unknown_id_waits_until_the_hold_ends);
+  RUN_TEST(test_a_switch_on_for_an_id_that_the_log_knows_is_not_refused_when_another_slot_is_unreadable);
+  RUN_TEST(test_an_unreadable_slot_is_never_written_and_does_not_count_as_room);
+  RUN_TEST(test_the_hold_of_an_unreadable_slot_is_counted_from_the_first_time_of_the_service_also_without_a_command);
+  RUN_TEST(test_a_switch_off_is_taken_when_every_slot_is_unreadable_and_a_switch_on_is_not);
+  RUN_TEST(test_the_end_of_the_hold_writes_a_free_record_so_the_next_start_does_not_hold_again);
+  RUN_TEST(test_a_slot_that_cannot_be_written_does_not_hold_back_a_switch_on_when_another_slot_is_free);
   RUN_TEST(test_numbers_count_from_the_boot_number_and_skip_the_ones_that_are_still_held);
   RUN_TEST(test_a_flash_that_refuses_the_record_holds_back_a_switch_on_but_not_a_switch_off);
   RUN_TEST(test_a_radio_that_refuses_the_frame_does_not_stop_the_resends);

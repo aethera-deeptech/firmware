@@ -204,7 +204,7 @@ void test_the_log_writes_and_reads_back_every_slot() {
     char id[kResultIdSize];
     snprintf(id, sizeof(id), "cmd-%u", static_cast<unsigned>(slot));
     CommandRecord back;
-    TEST_ASSERT_TRUE(log.read(slot, &back));
+    TEST_ASSERT_EQUAL_INT(static_cast<int>(LogRead::Record), static_cast<int>(log.read(slot, &back)));
     TEST_ASSERT_TRUE(sameRecord(makeRecord(id, static_cast<uint16_t>(0x0500 + slot), CommandState::Sent, kExpires + slot), back));
   }
   TEST_ASSERT_EQUAL_UINT32(0, log.damaged());
@@ -215,7 +215,7 @@ void test_a_slot_outside_the_log_is_refused_and_touches_nothing() {
   FakeBlobStore store;
   FlashCommandLog log(store);
   CommandRecord back;
-  TEST_ASSERT_FALSE(log.read(kCommandLogSlots, &back));
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(LogRead::Free), static_cast<int>(log.read(kCommandLogSlots, &back)));
   TEST_ASSERT_FALSE(log.write(kCommandLogSlots, makeRecord("a", 1, CommandState::Sent, 1)));
   TEST_ASSERT_EQUAL_INT(0, store.reads);
   TEST_ASSERT_EQUAL_INT(0, store.writes);
@@ -225,18 +225,18 @@ void test_a_slot_that_was_never_written_reads_as_free_and_is_not_counted_as_lost
   FakeBlobStore store;
   FlashCommandLog log(store);
   CommandRecord back;
-  TEST_ASSERT_FALSE(log.read(3, &back));
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(LogRead::Free), static_cast<int>(log.read(3, &back)));
   TEST_ASSERT_EQUAL_UINT32(0, log.damaged());
   TEST_ASSERT_EQUAL_UINT32(0, log.failedReads());
 }
 
-void test_a_damaged_slot_reads_as_free_and_is_counted() {
+void test_a_damaged_slot_reads_as_unreadable_and_is_counted() {
   FakeBlobStore store;
   FlashCommandLog log(store);
   TEST_ASSERT_TRUE(log.write(2, makeRecord("cmd-1", 5, CommandState::Sent, 10)));
   store.data[2][20] ^= 0x40;
   CommandRecord back;
-  TEST_ASSERT_FALSE(log.read(2, &back));
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(LogRead::Unreadable), static_cast<int>(log.read(2, &back)));
   TEST_ASSERT_EQUAL_UINT32(1, log.damaged());
   TEST_ASSERT_EQUAL_UINT32(0, log.failedReads());
 }
@@ -249,11 +249,11 @@ void test_a_read_that_fails_once_is_tried_again_and_one_that_keeps_failing_is_co
   store.failReadOnceSlot = 0;
   store.reads = 0;
   CommandRecord back;
-  TEST_ASSERT_TRUE(log.read(0, &back));
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(LogRead::Record), static_cast<int>(log.read(0, &back)));
   TEST_ASSERT_EQUAL_STRING("cmd-1", back.id);
   TEST_ASSERT_EQUAL_UINT32(0, log.failedReads());
   store.failReadSlot = 1;
-  TEST_ASSERT_FALSE(log.read(1, &back));
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(LogRead::Unreadable), static_cast<int>(log.read(1, &back)));
   TEST_ASSERT_EQUAL_UINT32(1, log.failedReads());
   TEST_ASSERT_EQUAL_UINT32(0, log.damaged());
 }
@@ -266,7 +266,7 @@ void test_a_failed_write_is_reported_and_the_log_does_not_touch_the_old_slot_and
   store.failWrites = true;
   TEST_ASSERT_FALSE(log.write(4, makeRecord("cmd-1", 5, CommandState::Done, 10)));
   CommandRecord back;
-  TEST_ASSERT_TRUE(log.read(4, &back));
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(LogRead::Record), static_cast<int>(log.read(4, &back)));
   TEST_ASSERT_EQUAL_INT(static_cast<int>(CommandState::Sent), static_cast<int>(back.state));
   store.failWrites = false;
   CommandRecord bad = makeRecord("x", 1, CommandState::Sent, 1);
@@ -325,9 +325,46 @@ void test_a_relay_that_restarts_over_the_flash_log_sends_the_same_number_again()
   answer.commandOk = true;
   restarted.onEvent(200, answer);
   CommandRecord back;
-  TEST_ASSERT_TRUE(reread.read(0, &back));
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(LogRead::Record), static_cast<int>(reread.read(0, &back)));
   TEST_ASSERT_EQUAL_INT(static_cast<int>(CommandState::Done), static_cast<int>(back.state));
   TEST_ASSERT_EQUAL_UINT16(number, back.number);
+}
+
+// A record that no longer passes the check hides a command that may have run. The relay keeps the slot and holds a switch on.
+void test_a_damaged_blob_makes_the_relay_hold_a_switch_on_and_let_a_switch_off_go() {
+  FakeStore nodes;
+  NodeRegistry registry(nodes);
+  registry.load();
+  uint8_t mac[kMacSize] = {0x40, 0x00, 0x00, 0x00, 0x00, 1};
+  uint8_t key[kNodeKeySize] = {1};
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(PairResult::Ok), static_cast<int>(registry.pair(kKindPlug, mac, key)));
+  char plug[kNodeIdSize];
+  TEST_ASSERT_TRUE(registry.nodeId(mac, plug));
+
+  FakeBlobStore store;
+  FlashCommandLog log(store);
+  FakeSender sender;
+  CommandRelay relay(sender, registry, log, 0x105);
+  relay.load();
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(SubmitResult::Queued), static_cast<int>(relay.submit(0, kServerTime, "cmd-1", plug, true, kExpires)));
+  LinkEvent event;
+  memset(&event, 0, sizeof(event));
+  event.kind = LinkEventKind::Telemetry;
+  memcpy(event.mac, mac, kMacSize);
+  event.frameBootId = kNodeBoot;
+  event.frameCounter = 10;
+  relay.onEvent(1000, event);
+  TEST_ASSERT_TRUE(store.present[0]);
+
+  // The hub starts again and the flash holds a changed byte in that record.
+  store.data[0][30] ^= 0x01;
+  FlashCommandLog reread(store);
+  CommandRelay restarted(sender, registry, reread, 0x206);
+  TEST_ASSERT_EQUAL_UINT(0, restarted.load());
+  TEST_ASSERT_EQUAL_UINT(1, restarted.unreadableSlots());
+  TEST_ASSERT_EQUAL_UINT32(1, reread.damaged());
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(SubmitResult::LogUnreadable), static_cast<int>(restarted.submit(50, kServerTime + 30, "cmd-1", plug, true, kExpires)));
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(SubmitResult::Queued), static_cast<int>(restarted.submit(50, kServerTime + 30, "cmd-1", plug, false, kExpires)));
 }
 
 int main() {
@@ -342,9 +379,10 @@ int main() {
   RUN_TEST(test_the_log_writes_and_reads_back_every_slot);
   RUN_TEST(test_a_slot_outside_the_log_is_refused_and_touches_nothing);
   RUN_TEST(test_a_slot_that_was_never_written_reads_as_free_and_is_not_counted_as_lost);
-  RUN_TEST(test_a_damaged_slot_reads_as_free_and_is_counted);
+  RUN_TEST(test_a_damaged_slot_reads_as_unreadable_and_is_counted);
   RUN_TEST(test_a_read_that_fails_once_is_tried_again_and_one_that_keeps_failing_is_counted);
   RUN_TEST(test_a_failed_write_is_reported_and_the_log_does_not_touch_the_old_slot_and_a_long_id_is_not_written);
   RUN_TEST(test_a_relay_that_restarts_over_the_flash_log_sends_the_same_number_again);
+  RUN_TEST(test_a_damaged_blob_makes_the_relay_hold_a_switch_on_and_let_a_switch_off_go);
   return UNITY_END();
 }

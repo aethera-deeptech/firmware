@@ -30,6 +30,11 @@ constexpr uint32_t kCommandResendMs = 5000;
 constexpr uint32_t kEchoUsableMs = 50000;
 // The longest life of a command, in seconds. A command that the backend lets live longer is cut to this.
 constexpr uint32_t kMaxCommandLifeSeconds = 600;
+// How long a slot that could not be read counts as used, counted from the first time of the service that the hub sees after the start. A record that
+// was written before the start belongs to a command that the backend sent before that time, so its life and the reserve of its number are over by then.
+// This relies on the rule of the backend that a command lives 10 minutes (CommandTTL in internal/relay/relay.go and the firmware guide). A longer life
+// at the backend would break it.
+constexpr uint32_t kUnreadableHoldSeconds = kMaxCommandLifeSeconds + kNumberReserveSeconds;
 
 // The state of a command in the log. Free is 0, so a slot that was never written reads as free.
 enum class CommandState : uint8_t {
@@ -48,13 +53,20 @@ struct CommandRecord {
 };
 
 // The storage of the records. On the chip it is the flash, and in the tests it is a fake in memory.
+enum class LogRead : uint8_t {
+  Record,      // the slot holds a record, and *out has it
+  Free,        // the slot was never written
+  Unreadable,  // the flash could not read the slot, or its bytes do not pass the check, so it may hold a record that the hub cannot see
+};
+
 class CommandLog {
  public:
   virtual ~CommandLog() = default;
-  // Reads one slot. Returns false when the slot cannot be read or holds a damaged record, and the slot then counts as free.
-  virtual bool read(size_t slot, CommandRecord *out) = 0;
+  // Reads one slot. Free means that nothing was ever written there, and Unreadable means that something may be there. The relay keeps an unreadable
+  // slot as used for a while and does not run a switch on while one exists, because the record that is lost may be the command that ran already.
+  virtual LogRead read(size_t slot, CommandRecord *out) = 0;
   // Writes one slot. A write that fails or is cut by a loss of power must leave the old record or the new record readable, never a damaged one,
-  // because a record that cannot be read counts as free, and the hub could then run an id again. The flash implementation has to keep this.
+  // because a record that cannot be read hides the command, and the hub could then run an id again. The flash implementation has to keep this.
   virtual bool write(size_t slot, const CommandRecord &record) = 0;
 };
 
@@ -67,6 +79,7 @@ enum class SubmitResult : uint8_t {
   BadId,        // the id of the command is empty, longer than 36 characters, or holds a character that is not a letter, a digit or a hyphen
   Expired,      // the command has no life left, so it is not run
   Full,         // the queue, the numbers or the log are used up, so the command is not taken and the backend sends it again
+  LogUnreadable,  // a slot of the log could not be read, so a switch on is not taken for now and the backend sends it again. A switch off is not refused
 };
 
 class CommandRelay {
@@ -77,7 +90,8 @@ class CommandRelay {
   CommandRelay(const CommandRelay &) = delete;
   CommandRelay &operator=(const CommandRelay &) = delete;
 
-  // Reads the log. Call it once at the start, before the first submit. Returns the number of slots that hold a record.
+  // Reads the log. Call it once at the start, before the first submit. Returns the number of slots that hold a record. A slot that cannot be read is
+  // kept as used, and unreadableSlots() counts them, so the hub can print it.
   size_t load();
 
   // A command from the answer of the backend. serverTime is the time of the service in that answer, and expiresAt is the time of the command, both in
@@ -106,10 +120,15 @@ class CommandRelay {
   void forget(const uint8_t mac[kMacSize]);
 
   // Forgets the records whose command ended more than kNumberReserveSeconds before serverTime. submit() does it too, and the caller may call it for an
-  // answer that holds no command, so the log does not fill up with old records. Nothing is written to flash.
+  // answer that holds no command, so the log does not fill up with old records. Nothing is written to flash, except when the hold of unreadable slots
+  // ends. Then a free record is written over each of them, so the next start does not find the same bytes and hold again. A write that fails is not
+  // retried, and the slot is used again like a free one.
   void forgetEnded(uint32_t serverTime);
 
   size_t pendingCount() const;
+  // The slots that could not be read at load() and are still held. They end kUnreadableHoldSeconds after the first time of the service that the relay
+  // sees, and a switch on for an id that the log does not know is refused until then. A switch off is taken also when no free slot is left.
+  size_t unreadableSlots() const;
   // The number of writes that the flash refused, for the log of the hub.
   uint32_t logFailures() const { return logFailures_; }
 
@@ -133,7 +152,7 @@ class CommandRelay {
 
   int findPending(const char *id) const;
   int findLog(const char *id) const;
-  int pickLogSlot() const;  // -1 when no slot can be used
+  int pickLogSlot(size_t from = 0) const;  // -1 when no slot from this index on can be used
   bool resultWaiting(const char *id) const;
   bool numberInUse(uint16_t number) const;
   bool allocateNumber(uint16_t *number);
@@ -152,6 +171,9 @@ class CommandRelay {
   uint32_t logFailures_;
   Pending pending_[kMaxQueuedCommands];
   CommandRecord records_[kCommandLogSlots];
+  bool unreadable_[kCommandLogSlots];  // the slot could not be read at load(), and its record state is Free, but the slot is not usable
+  bool unreadableTimed_;
+  uint32_t unreadableFrom_;
   RelayResult results_[kMaxHeldResults];
   bool unknown_[kMaxHeldResults];  // the result is the answer about an unknown node, which has no record in the log
   size_t resultCount_;
