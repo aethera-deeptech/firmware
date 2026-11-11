@@ -140,16 +140,10 @@ static void logLinkEvent(const wattlink::LinkEvent &event) {
     case wattlink::LinkEventKind::PairingFailed:
       Serial.printf("Link: pairing failed, reason %d\n", static_cast<int>(event.refusal));
       break;
-    case wattlink::LinkEventKind::ResultReceived: {
-      // The event holds the MAC and not the id, and a line names a node by its id.
-      char id[wattlink::kNodeIdSize];
-      if (!nodes.nodeId(event.mac, id)) {
-        strcpy(id, "?");
-      }
-      Serial.printf("Link: %s answered command number %u, %s\n", id, static_cast<unsigned>(event.commandNumber),
+    case wattlink::LinkEventKind::ResultReceived:
+      Serial.printf("Link: %s answered command number %u, %s\n", event.nodeId, static_cast<unsigned>(event.commandNumber),
                     event.commandOk ? "switched" : "did not switch");
       break;
-    }
     case wattlink::LinkEventKind::StoreFailed:
       Serial.println("Link: a frame was dropped because the flash refused the boot value");
       break;
@@ -186,7 +180,8 @@ static void serviceRadio(uint32_t now) {
     hubPairing->update(millis());
   }
   if (commandRelay != nullptr) {
-    commandRelay->update(now);
+    // The clock is read again, because the frames above took time, and the relay compares this time with the time of the newest frame of a plug.
+    commandRelay->update(millis());
   }
   if (now - lastExpireMs >= kExpireEveryMs) {
     lastExpireMs = now;

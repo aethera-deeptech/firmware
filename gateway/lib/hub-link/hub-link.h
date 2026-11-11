@@ -58,7 +58,7 @@ struct LinkEvent {
   bool commandOk;            // set for ResultReceived, true when the node says that the relay switched
   RequestResult request;     // set when the kind is PairRequest
   PairResult refusal;        // the reason when the request was refused, or when the pairing failed
-  char nodeId[kNodeIdSize];  // set for an accepted PairRequest and for PairedNode
+  char nodeId[kNodeIdSize];  // set for an accepted PairRequest, for PairedNode and for ResultReceived
   size_t samples;            // set for Telemetry and PairedNode
 };
 
