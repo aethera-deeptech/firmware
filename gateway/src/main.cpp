@@ -100,24 +100,34 @@ constexpr uint32_t kExpireEveryMs = 60000;
 static int lastPairingSeconds = -1;
 // What the home screen showed last, so that it is drawn again only when it changes. -1 means that it has to be drawn.
 static int lastHome = -1;
+// The claim code that is on the display, or an empty text when the display shows another screen. The code is 8 characters.
+static char shownClaim[16] = "";
 // The result of the crypto self test stays here, so the pairing code can refuse to start when the chip disagrees with the host tests.
 // Until the test has run, the result counts as failed.
 static wattlink::SelfTestResult cryptoResult = wattlink::SelfTestResult::HkdfFailed;
 
-// The home screen. It says that the Wi-Fi is not set up yet, or whether the hub is joined. The server line stays "putus" until the client of
-// the backend exists, and the node count and the power stay 0 until the nodes are connected.
+// The server is up when the hub belongs to a business and the last answer of the backend was a success.
+static bool serverUp() {
+  return backendClient != nullptr && backendClient->state() == wattlink::ClientState::Running && backendClient->lastStatus() == 200;
+}
+
+// The home screen. It says that the Wi-Fi is not set up yet, or whether the hub is joined and whether the backend answers. The power stays 0 until the
+// nodes are connected.
 static void drawHome(bool force) {
   const bool needSetup = wifi.state() == wattlink::LinkState::Idle;
   const unsigned paired = static_cast<unsigned>(nodes.pairedCount());
-  const int key = static_cast<int>(paired) * 3 + (needSetup ? 2 : (wifi.connected() ? 1 : 0));
+  const bool server = serverUp();
+  const int key = (static_cast<int>(paired) * 3 + (needSetup ? 2 : (wifi.connected() ? 1 : 0))) * 2 + (server ? 1 : 0);
   if (!force && key == lastHome) {
     return;
   }
   lastHome = key;
+  // Another screen may be on the display now, so the claim screen is drawn again when it is due.
+  shownClaim[0] = '\0';
   if (needSetup) {
     oled.show(wattlink::needSetupScreen());
   } else {
-    oled.show(wattlink::statusScreen(wifi.connected(), false, paired, 0));
+    oled.show(wattlink::statusScreen(wifi.connected(), server, paired, 0));
   }
 }
 
@@ -125,6 +135,7 @@ static void drawHome(bool force) {
 static void drawScreen(uint32_t now) {
   const wattlink::WindowState window = pairing.update(now);
   if (window == wattlink::WindowState::Open) {
+    shownClaim[0] = '\0';
     const int seconds = static_cast<int>(pairing.secondsLeft(now));
     if (seconds != lastPairingSeconds) {
       lastPairingSeconds = seconds;
@@ -133,6 +144,21 @@ static void drawScreen(uint32_t now) {
     return;
   }
   if (window == wattlink::WindowState::Pairing) {
+    shownClaim[0] = '\0';
+    return;
+  }
+  // While the hub waits for the owner to type the claim code, the code is on the display.
+  if (backendClient != nullptr && backendClient->state() == wattlink::ClientState::ShowCode) {
+    const char *code = backendClient->claimCode();
+    if (strcmp(code, shownClaim) != 0) {
+      snprintf(shownClaim, sizeof(shownClaim), "%s", code);
+      oled.show(wattlink::claimScreen(code));
+    }
+    return;
+  }
+  if (shownClaim[0] != '\0') {
+    // The code is gone (claimed, expired or refused), so the home screen comes back.
+    drawHome(true);
     return;
   }
   if (lastPairingSeconds != -1) {
@@ -264,8 +290,8 @@ static const char *clientEventName(wattlink::ClientEventKind kind) {
   return "unknown";
 }
 
-// One line for each event of the client. The claim code goes to the serial port until the display has a screen for it. It is the code that the owner
-// types in the app, and it ends after a few minutes. The key and the key hash are never printed. For RequestFailed the value is the kind of failure.
+// One line for each event of the client. The claim code goes to the serial port as well as to the display. It is the code that the owner types in the app,
+// and it ends after a few minutes. The key and the key hash are never printed. For RequestFailed the value is the kind of failure.
 static void logClientEvent(const wattlink::ClientEvent &event) {
   if (event.kind == wattlink::ClientEventKind::CodeShown) {
     Serial.printf("Backend: claim code %s, valid for %lu seconds\n", backendClient->claimCode(),
