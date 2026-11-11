@@ -1,6 +1,6 @@
 # Flashing the hub from a CI build
 
-The Firmware workflow builds the hub on every run and keeps the four files that the chip needs for 14 days, as the artifact `hub-flash` of that run. This page says how to put those files on a hub board without installing PlatformIO. It needs Python with `esptool` 5 or newer, and the GitHub CLI with a login (`gh auth login`) to download the files. The commands use the hyphen spelling of `esptool` 5, for example `write-flash`. Version 4 spells them with underscores, for example `write_flash`.
+The Firmware workflow builds the hub on every run and keeps the four files that the chip needs for 14 days, as the artifact `hub-flash` of that run. This page says how to put those files on a hub board without installing PlatformIO. It needs Python with `esptool` 5 or newer, and the GitHub CLI with a login (`gh auth login`) to download the files. The commands use the hyphen spelling of `esptool` 5, for example `write-flash`. Older versions use underscores, for example `write_flash`, so a version 4 install needs that spelling.
 
 Use only the artifact of a run on `main`, or of a pull request that you have read. The artifact is a program that runs on your board, and a run from an unreviewed branch can hold anything.
 
@@ -55,9 +55,9 @@ The offsets follow `gateway/partitions.csv`. The table has the NVS at `0x9000` w
 - On Linux the port belongs to a group, often `dialout` or `uucp`. A permission error means that your user is not in it.
 - The port can be `ttyACM0` or a COM name instead of `ttyUSB0`.
 - Some boards have no automatic reset. When `esptool` stays at `Connecting....`, hold the BOOT button until the write starts. This also reaches a board that restarts in a loop, because `esptool` talks to the loader in the chip and not to the firmware.
-- The BOOT hold works only when GPIO 0 goes low. To check it, open the monitor with both control lines off, hold BOOT and wait for the chip to restart. A chip in download mode prints `boot:0x3` and `waiting for download`. A line with `boot:0x13` while BOOT is held means that GPIO 0 did not go low. Then check the button and its solder joints, or use another board.
-- A boot log that restarts every few seconds with `rst:0x1 (POWERON_RESET)` can point to a weak supply, because the Wi-Fi start draws a current spike. Use a short cable that carries data and a port on the PC itself and not a hub. A powered hub can also help.
-- A kernel log (`journalctl -k` on Linux) with `error -71`, or a port that vanishes and returns while you work, points to a bad cable or port. Change the cable first.
+- The BOOT hold works only when GPIO 0 goes low. The chip reads GPIO 0 only at a reset. To check it, open the monitor as in step 4 with both control lines off. Hold BOOT, press EN once and read the first lines. A chip in download mode prints `boot:0x3` and `waiting for download`. A line with `boot:0x13` while BOOT is held means that GPIO 0 did not go low. Then check the button and its solder joints, or use another board.
+- A boot log that restarts every few seconds with `rst:0x1 (POWERON_RESET)` or `rst:0xf (BROWNOUT_RST)` can come from a weak supply or a faulty EN line. The Wi-Fi start is a likely trigger, because it draws a current spike. Use a short cable that carries data. Plug it into a port on the PC itself and not into a hub. A powered hub may help.
+- A kernel log (`journalctl -k` on Linux) with `error -71`, or a port that vanishes and returns while you work, often points to a bad cable or port. Change the cable first.
 - `esptool` can erase the whole flash with `erase-flash`. That gives a clean state, and it deletes the saved settings and every pairing.
 
 ## What the write changes
