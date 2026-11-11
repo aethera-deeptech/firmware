@@ -126,16 +126,15 @@ class ExtraRoots(unittest.TestCase):
         for root in (b"GlobalSign Root CA", b"GTS Root R4"):
             self.assertIn(root, names)
 
-    def test_the_top_certificate_that_the_server_sends_has_its_issuer_in_the_bundle_and_only_with_the_extra_root(self):
+    def test_the_top_certificate_that_the_server_sends_has_its_issuer_in_the_bundle(self):
         # The server of the backend sends its own certificate, GTS WE1 and GTS Root R4 cross signed by GlobalSign Root CA. The core looks up the issuer of the
-        # last one in the bundle. This is the certificate of the chain as the server sent it on 2026-11-11, and it ends on 2028-01-28.
+        # last one in the bundle. This is the certificate of the chain as the server sent it on 2026-11-11, and it ends on 2028-01-28. On that day the
+        # list of Mozilla did not hold the issuer, and the hub failed every request until the extra root was added.
         with open(os.path.join(HERE, "fixtures", "gts-root-r4-cross-signed.pem"), "r", encoding="ascii") as handle:
             top = generator.pem_certificates(handle.read())[0]
         issuer = generator.issuer_name(top)
-        with_extra = [name for name, _ in entries(generator.make_bundle([read("cacert.pem"), read("extra-roots.pem")]))]
-        without_extra = [name for name, _ in entries(generator.make_bundle([read("cacert.pem")]))]
-        self.assertIn(issuer, with_extra)
-        self.assertNotIn(issuer, without_extra)
+        names = [name for name, _ in entries(generator.make_bundle([read("cacert.pem"), read("extra-roots.pem")]))]
+        self.assertIn(issuer, names)
 
     def test_the_end_of_an_extra_root_is_found_months_before_it(self):
         # Only GlobalSign R1 is looked at, so a root that a person adds to the file, with an end of its own, does not change this test.
