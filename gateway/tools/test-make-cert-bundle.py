@@ -18,6 +18,10 @@ spec.loader.exec_module(generator)
 # The bundle that the generator makes from the pinned list. The same bytes were made with the cryptography package, which is what the script of Espressif
 # uses, and the two were equal. A change of this value means that the list or the generator changed, and it has to be looked at.
 EXPECTED_BUNDLE_SHA256 = "8ca330673e7ecd07610eecfaffd23aba8b9ceca10a381d3878f268348edf5aec"
+# The bundle that the build embeds, from the list of Mozilla and the file of extra roots. It was checked against the chain of the backend with openssl.
+EXPECTED_FULL_BUNDLE_SHA256 = "cb82c296d50ef4ac58d193b4c27a7ce52f5a7e2d5986615b0239fa776349a787"
+# The SHA-256 fingerprint of GlobalSign Root CA (R1), as GlobalSign publishes it. The server of the backend sends GTS Root R4 cross signed by this root.
+GLOBALSIGN_R1_FINGERPRINT = "ebd41040e4bb3ec742c9e381d31ef2a41a48b6685c96e7cef3c1df6cd4331c99"
 
 
 def read(name):
@@ -69,6 +73,40 @@ class PinnedList(unittest.TestCase):
         names = b"".join(name for name, _ in found)
         for root in (b"GTS Root R4", b"ISRG Root X1"):
             self.assertIn(root, names)
+
+
+class ExtraRoots(unittest.TestCase):
+    def test_the_file_of_extra_roots_is_the_one_that_is_pinned(self):
+        with open(os.path.join(CERTS, "extra-roots.pem"), "rb") as handle:
+            digest = hashlib.sha256(handle.read()).hexdigest()
+        with open(os.path.join(CERTS, "extra-roots.pem.sha256"), "r", encoding="ascii") as handle:
+            pinned = handle.read().split()[0]
+        self.assertEqual(pinned, digest)
+
+    def test_the_file_of_extra_roots_holds_globalsign_r1_and_nothing_else(self):
+        der_list = generator.pem_certificates(read("extra-roots.pem"))
+        self.assertEqual(1, len(der_list))
+        self.assertEqual(GLOBALSIGN_R1_FINGERPRINT, hashlib.sha256(der_list[0]).hexdigest())
+        name, _ = generator.subject_and_key(der_list[0])
+        self.assertIn(b"GlobalSign Root CA", name)
+
+    def test_the_bundle_of_both_files_is_the_expected_one_and_holds_one_more_root(self):
+        mozilla = read("cacert.pem")
+        bundle = generator.make_bundle([mozilla, read("extra-roots.pem")])
+        self.assertEqual(EXPECTED_FULL_BUNDLE_SHA256, hashlib.sha256(bundle).hexdigest())
+        self.assertEqual(mozilla.count("-----BEGIN CERTIFICATE-----") + 1, len(entries(bundle)))
+
+    def test_the_issuer_of_the_last_certificate_of_the_backend_is_in_the_bundle(self):
+        found = entries(generator.make_bundle([read("cacert.pem"), read("extra-roots.pem")]))
+        names = b"".join(name for name, _ in found)
+        for root in (b"GlobalSign Root CA", b"GTS Root R4"):
+            self.assertIn(root, names)
+
+    def test_a_root_that_two_files_both_hold_is_in_the_bundle_once(self):
+        extra = read("extra-roots.pem")
+        once = generator.make_bundle([read("cacert.pem"), extra])
+        twice = generator.make_bundle([read("cacert.pem"), extra, extra])
+        self.assertEqual(once, twice)
 
 
 class Errors(unittest.TestCase):

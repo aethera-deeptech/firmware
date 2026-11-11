@@ -1,6 +1,7 @@
-"""PlatformIO script that runs before the build of the hub. It makes certs/x509_crt_bundle.bin from certs/cacert.pem, and the build embeds the file.
+"""PlatformIO script that runs before the build of the hub. It makes certs/x509_crt_bundle.bin from certs/cacert.pem and certs/extra-roots.pem, and the build
+embeds the file.
 
-The build stops when cacert.pem is not the file that certs/cacert.pem.sha256 names. The pin guards against a damaged or half edited list. It does not guard
+The build stops when one of the two lists is not the file that its .sha256 file names. The pin guards against a damaged or half edited list. It does not guard
 against a change of all of the files together, which a review has to read, see certs/README.md. The generated file is not committed.
 """
 
@@ -18,8 +19,10 @@ generator = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(generator)
 
 try:
-    text = generator.load_pinned_list(os.path.join(certs_dir, "cacert.pem"), os.path.join(certs_dir, "cacert.pem.sha256"))
-    bundle = generator.make_bundle([text])
+    texts = []
+    for name in ("cacert.pem", "extra-roots.pem"):
+        texts.append(generator.load_pinned_list(os.path.join(certs_dir, name), os.path.join(certs_dir, name + ".sha256")))
+    bundle = generator.make_bundle(texts)
 except generator.BundleError as error:
     raise SystemExit("the bundle of root certificates is not made, because %s" % error)
 

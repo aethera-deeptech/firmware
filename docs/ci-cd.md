@@ -41,7 +41,7 @@ The ruleset `main` requires a pull request, resolved review threads, verified si
 | Dependency review | `security.yaml` |
 | Secret scan (gitleaks) | `security.yaml` |
 
-The job Native tests also runs the tests of the generator of the bundle of root certificates (`gateway/tools`). The build of the hub makes the bundle from `gateway/certs/cacert.pem` and stops when the file does not match its pinned hash, see `gateway/certs/README.md`.
+The job Native tests also runs the tests of the generator of the bundle of root certificates (`gateway/tools`). The build of the hub makes the bundle from `gateway/certs/cacert.pem` and `gateway/certs/extra-roots.pem` and stops when one of the files does not match its pinned hash, see `gateway/certs/README.md`.
 
 A check is added to the ruleset after it has run once on a pull request, because a required check that never ran blocks every merge. OSSF Scorecard is not required because it never runs on a pull request.
 

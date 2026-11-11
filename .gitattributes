@@ -1,3 +1,5 @@
 # The pin of the list of root certificates is a hash of its bytes, so a checkout must not change its line ends.
 gateway/certs/cacert.pem -text
 gateway/certs/cacert.pem.sha256 -text
+gateway/certs/extra-roots.pem -text
+gateway/certs/extra-roots.pem.sha256 -text

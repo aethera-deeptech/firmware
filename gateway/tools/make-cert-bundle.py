@@ -8,7 +8,7 @@ length), and the key is the DER encoding of its SubjectPublicKeyInfo. The entrie
 binary search on the issuer of the first certificate in the chain that it does not trust yet.
 
 The program uses the standard library only, so the build needs no package. It does not check signatures, dates or the purpose of a certificate, because
-the file that it reads (the list of Mozilla) is the decision of what is trusted, and the hash of that file is pinned next to it.
+the files that it reads (the list of Mozilla and the file of extra roots) are the decision of what is trusted, and the hash of each file is pinned next to it.
 
 Usage: make-cert-bundle.py INPUT.pem [INPUT.pem ...] --output OUTPUT
 """
@@ -118,7 +118,8 @@ def make_bundle(texts):
         raise BundleError("there is no certificate in the input")
     if len(entries) > MAX_CERTIFICATES:
         raise BundleError("there are too many certificates")
-    entries.sort()
+    # A root that two files both hold (for example when Mozilla adds a root that the extra file has) is in the bundle once.
+    entries = sorted(set(entries))
     out = bytearray(struct.pack(">H", len(entries)))
     for name, key in entries:
         if len(name) > MAX_ENTRY_PART or len(key) > MAX_ENTRY_PART:
