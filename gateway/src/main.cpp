@@ -62,9 +62,10 @@ static wattlink::HubPairing *hubPairing = nullptr;
 static wattlink::HubLink *hubLink = nullptr;
 // The relay of the commands of the backend. It sends a command to its plug with the next frame of that plug, so it needs the link layer and the boot
 // number, and it is built next to them. The backend client does not hand it commands yet, so for now it only reads its log and follows the frames.
+// The relay is about 11 KB. The static data of the chip has room for about 124 KB in all, and the pool of samples and the other objects use most of
+// it, so the relay is made in the heap at the start and is never freed. The link stays up when there is no memory for it, and no command is sent.
 static wattlink::NvsCommandBlobStore commandFlash;
 static wattlink::FlashCommandLog commandLog(commandFlash);
-alignas(wattlink::CommandRelay) static uint8_t commandRelayMemory[sizeof(wattlink::CommandRelay)];
 static wattlink::CommandRelay *commandRelay = nullptr;
 // The frames that one pass of loop() takes from the queue. HubLink writes flash for a frame, so the button and the Wi-Fi watch must still get their turn.
 constexpr int kFramesPerPass = 4;
@@ -256,11 +257,15 @@ void setup() {
     hubLink = new (hubLinkMemory) wattlink::HubLink(*hubPairing, nodes, radio, sampleStore, crypto);
     Serial.println("Link: ready");
     // The relay reads its log once. A slot that the flash cannot read is held, and a switch on waits while one exists. The line says how many.
-    commandRelay = new (commandRelayMemory) wattlink::CommandRelay(*hubLink, nodes, commandLog, hubBootId);
-    const size_t held = commandRelay->load();
-    Serial.printf("Commands: %u records held, %u slots unreadable (%lu damaged, %lu not readable by the flash)\n", static_cast<unsigned>(held),
-                  static_cast<unsigned>(commandRelay->unreadableSlots()), static_cast<unsigned long>(commandLog.damaged()),
-                  static_cast<unsigned long>(commandLog.failedReads()));
+    commandRelay = new (std::nothrow) wattlink::CommandRelay(*hubLink, nodes, commandLog, hubBootId);
+    if (commandRelay != nullptr) {
+      const size_t held = commandRelay->load();
+      Serial.printf("Commands: %u records held, %u slots unreadable (%lu damaged, %lu not readable by the flash)\n", static_cast<unsigned>(held),
+                    static_cast<unsigned>(commandRelay->unreadableSlots()), static_cast<unsigned long>(commandLog.damaged()),
+                    static_cast<unsigned long>(commandLog.failedReads()));
+    } else {
+      Serial.println("Commands: no memory for the relay, no command will be sent");
+    }
   } else {
     Serial.println("Link: off, the hub does not take frames");
   }
