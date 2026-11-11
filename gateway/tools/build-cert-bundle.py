@@ -1,9 +1,11 @@
-"""PlatformIO script that runs before the build of the hub. It makes certs/x509_crt_bundle.bin from certs/cacert.pem, and the build embeds the file.
+"""PlatformIO script that runs before the build of the hub. It makes certs/x509_crt_bundle.bin from certs/cacert.pem and certs/extra-roots.pem, and the build
+embeds the file.
 
-The build stops when cacert.pem is not the file that certs/cacert.pem.sha256 names. The pin guards against a damaged or half edited list. It does not guard
+The build stops when one of the two lists is not the file that its .sha256 file names. The pin guards against a damaged or half edited list. It does not guard
 against a change of all of the files together, which a review has to read, see certs/README.md. The generated file is not committed.
 """
 
+import datetime
 import importlib.util
 import os
 
@@ -18,9 +20,15 @@ generator = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(generator)
 
 try:
-    text = generator.load_pinned_list(os.path.join(certs_dir, "cacert.pem"), os.path.join(certs_dir, "cacert.pem.sha256"))
-    bundle = generator.make_bundle([text])
-except generator.BundleError as error:
+    texts = []
+    for name in ("cacert.pem", "extra-roots.pem"):
+        texts.append(generator.load_pinned_list(os.path.join(certs_dir, name), os.path.join(certs_dir, name + ".sha256")))
+    bundle = generator.make_bundle(texts)
+    # The core does not check the dates of a root, but the certificates that a server sends have dates. A root of the extra file ends one day, and the
+    # build says so for six months before, so nobody learns it from a hub that fails.
+    for end, name in generator.roots_ending_soon([texts[1]], datetime.date.today(), 183):
+        print("WARNING: an extra root certificate ends on %s (%s), see certs/README.md" % (end, name.decode("latin-1", errors="replace").strip()))
+except (generator.BundleError, OSError, UnicodeDecodeError) as error:
     raise SystemExit("the bundle of root certificates is not made, because %s" % error)
 
 current = None

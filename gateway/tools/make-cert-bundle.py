@@ -8,7 +8,7 @@ length), and the key is the DER encoding of its SubjectPublicKeyInfo. The entrie
 binary search on the issuer of the first certificate in the chain that it does not trust yet.
 
 The program uses the standard library only, so the build needs no package. It does not check signatures, dates or the purpose of a certificate, because
-the file that it reads (the list of Mozilla) is the decision of what is trusted, and the hash of that file is pinned next to it.
+the files that it reads (the list of Mozilla and the file of extra roots) are the decision of what is trusted, and the hash of each file is pinned next to it.
 
 Usage: make-cert-bundle.py INPUT.pem [INPUT.pem ...] --output OUTPUT
 """
@@ -16,6 +16,7 @@ Usage: make-cert-bundle.py INPUT.pem [INPUT.pem ...] --output OUTPUT
 import argparse
 import base64
 import binascii
+import datetime
 import hashlib
 import re
 import struct
@@ -54,8 +55,9 @@ def read_tlv(data, pos):
     return tag, pos, end
 
 
-def subject_and_key(der):
-    """Returns the DER of the subject name and of the SubjectPublicKeyInfo of one certificate."""
+def tbs_fields(der):
+    """Returns (start, end, tag) of the fields of the tbsCertificate after the version, in order: serial number, signature algorithm, issuer, validity,
+    subject and subject public key info."""
     tag, start, end = read_tlv(der, 0)
     if tag != TAG_SEQUENCE or end != len(der):
         raise BundleError("the certificate is not one sequence")
@@ -73,10 +75,56 @@ def subject_and_key(der):
             raise BundleError("a field is longer than the tbsCertificate")
         fields.append((pos, element_end, tag))
         pos = element_end
+    return fields
+
+
+def subject_and_key(der):
+    """Returns the DER of the subject name and of the SubjectPublicKeyInfo of one certificate."""
+    fields = tbs_fields(der)
     subject, key = fields[4], fields[5]
     if subject[2] != TAG_SEQUENCE or key[2] != TAG_SEQUENCE:
         raise BundleError("the subject or the key is not a sequence")
     return der[subject[0] : subject[1]], der[key[0] : key[1]]
+
+
+def issuer_name(der):
+    """Returns the DER of the issuer name of one certificate. This is the bytes that the core looks up in the bundle for the last certificate of a chain."""
+    issuer = tbs_fields(der)[2]
+    if issuer[2] != TAG_SEQUENCE:
+        raise BundleError("the issuer is not a sequence")
+    return der[issuer[0] : issuer[1]]
+
+
+def validity_end(der):
+    """Returns the date (UTC) at which one certificate ends. The core never checks it for a root of the bundle, but a person who reads the list needs it."""
+    element_start, _, tag = tbs_fields(der)[3]
+    if tag != TAG_SEQUENCE:
+        raise BundleError("the validity is not a sequence")
+    _, pos, _ = read_tlv(der, element_start)  # the start of the content, which holds notBefore and notAfter
+    _, _, not_before_end = read_tlv(der, pos)
+    time_tag, time_start, time_end = read_tlv(der, not_before_end)
+    text = der[time_start:time_end].decode("ascii", errors="replace")
+    try:
+        if time_tag == 0x17 and len(text) == 13 and text.endswith("Z"):  # UTCTime, YYMMDDHHMMSSZ
+            year = int(text[0:2])
+            year += 1900 if year >= 50 else 2000
+            return datetime.date(year, int(text[2:4]), int(text[4:6]))
+        if time_tag == 0x18 and len(text) == 15 and text.endswith("Z"):  # GeneralizedTime, YYYYMMDDHHMMSSZ
+            return datetime.date(int(text[0:4]), int(text[4:6]), int(text[6:8]))
+    except ValueError as error:
+        raise BundleError("the end of the validity is not a date") from error
+    raise BundleError("the end of the validity has a format that is not known")
+
+
+def roots_ending_soon(texts, today, days):
+    """Returns (date, subject name) for every certificate in the texts that ends within the given number of days from today, or has ended already."""
+    found = []
+    for text in texts:
+        for der in pem_certificates(text):
+            end = validity_end(der)
+            if (end - today).days < days:
+                found.append((end, subject_and_key(der)[0]))
+    return sorted(found)
 
 
 def pem_certificates(text):
@@ -118,7 +166,12 @@ def make_bundle(texts):
         raise BundleError("there is no certificate in the input")
     if len(entries) > MAX_CERTIFICATES:
         raise BundleError("there are too many certificates")
-    entries.sort()
+    # A root that two files both hold (for example when Mozilla adds a root that the extra file has) is in the bundle once.
+    entries = sorted(set(entries))
+    # The core finds a root by a binary search on its name, so two entries with one name and two keys would be picked by chance.
+    names = [name for name, _ in entries]
+    if len(set(names)) != len(names):
+        raise BundleError("two certificates have the same subject and different keys")
     out = bytearray(struct.pack(">H", len(entries)))
     for name, key in entries:
         if len(name) > MAX_ENTRY_PART or len(key) > MAX_ENTRY_PART:
