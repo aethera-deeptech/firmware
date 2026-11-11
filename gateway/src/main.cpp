@@ -533,9 +533,9 @@ void loop() {
         break;
       }
       if (backendClient->requestNewEnroll(now)) {
-        Serial.println("Button: new claim code asked, the key was renewed");
+        Serial.println("Button: new claim code scheduled, the key was renewed, the code comes when the Wi-Fi and the clock are ready");
       } else if (backendClient->state() == wattlink::ClientState::NeedEnroll) {
-        Serial.println("Button: new claim code asked, but the flash refused the new key, so the old key stays");
+        Serial.println("Button: new claim code scheduled, but the flash refused the new key, so the old key stays");
       } else {
         Serial.println("Button: new claim code not asked, the flash refused the change, hold the button again");
       }
