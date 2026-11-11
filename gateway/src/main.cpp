@@ -151,6 +151,9 @@ static void drawScreen(uint32_t now) {
   }
   if (window == wattlink::WindowState::Pairing) {
     shownClaim[0] = '\0';
+    // The window may have gone from Open to Pairing in one pass, so no pairing screen was drawn, and an old screen may be on the display. The home screen
+    // is drawn again when the window ends.
+    lastHome = -1;
     return;
   }
   // While the hub waits for the owner to type the claim code, the code is on the display.
