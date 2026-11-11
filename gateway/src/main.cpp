@@ -100,24 +100,40 @@ constexpr uint32_t kExpireEveryMs = 60000;
 static int lastPairingSeconds = -1;
 // What the home screen showed last, so that it is drawn again only when it changes. -1 means that it has to be drawn.
 static int lastHome = -1;
+// The claim code that is on the display, or an empty text when the display shows another screen. The code is 8 characters.
+static char shownClaim[16] = "";
 // The result of the crypto self test stays here, so the pairing code can refuse to start when the chip disagrees with the host tests.
 // Until the test has run, the result counts as failed.
 static wattlink::SelfTestResult cryptoResult = wattlink::SelfTestResult::HkdfFailed;
 
-// The home screen. It says that the Wi-Fi is not set up yet, or whether the hub is joined. The server line stays "putus" until the client of
-// the backend exists, and the node count and the power stay 0 until the nodes are connected.
+// The server counts as up when the hub belongs to a business, the Wi-Fi is joined and the backend stored a batch in the last 90 seconds (three
+// intervals of the client). A hub that sends no batch, because no node is paired or the nodes are quiet, shows the server as down, as the old
+// screen always did. The status of the last answer is not used, because it stays old when no request runs.
+constexpr uint32_t kServerFreshMs = 90000;
+static bool batchSeen = false;
+static uint32_t lastBatchStoredMs = 0;
+static bool serverUp() {
+  return backendClient != nullptr && backendClient->state() == wattlink::ClientState::Running && wifi.connected() && batchSeen &&
+         millis() - lastBatchStoredMs < kServerFreshMs;
+}
+
+// The home screen. It says that the Wi-Fi is not set up yet, or whether the hub is joined and whether the backend answers. The power stays 0 until the
+// nodes are connected.
 static void drawHome(bool force) {
   const bool needSetup = wifi.state() == wattlink::LinkState::Idle;
   const unsigned paired = static_cast<unsigned>(nodes.pairedCount());
-  const int key = static_cast<int>(paired) * 3 + (needSetup ? 2 : (wifi.connected() ? 1 : 0));
+  const bool server = serverUp();
+  const int key = (static_cast<int>(paired) * 3 + (needSetup ? 2 : (wifi.connected() ? 1 : 0))) * 2 + (server ? 1 : 0);
   if (!force && key == lastHome) {
     return;
   }
   lastHome = key;
+  // Another screen may be on the display now, so the claim screen is drawn again when it is due.
+  shownClaim[0] = '\0';
   if (needSetup) {
     oled.show(wattlink::needSetupScreen());
   } else {
-    oled.show(wattlink::statusScreen(wifi.connected(), false, paired, 0));
+    oled.show(wattlink::statusScreen(wifi.connected(), server, paired, 0));
   }
 }
 
@@ -125,6 +141,7 @@ static void drawHome(bool force) {
 static void drawScreen(uint32_t now) {
   const wattlink::WindowState window = pairing.update(now);
   if (window == wattlink::WindowState::Open) {
+    shownClaim[0] = '\0';
     const int seconds = static_cast<int>(pairing.secondsLeft(now));
     if (seconds != lastPairingSeconds) {
       lastPairingSeconds = seconds;
@@ -133,6 +150,26 @@ static void drawScreen(uint32_t now) {
     return;
   }
   if (window == wattlink::WindowState::Pairing) {
+    shownClaim[0] = '\0';
+    // The window may have gone from Open to Pairing in one pass, so no pairing screen was drawn, and an old screen may be on the display. The home screen
+    // is drawn again when the window ends.
+    lastHome = -1;
+    return;
+  }
+  // While the hub waits for the owner to type the claim code, the code is on the display.
+  // It is hidden while the Wi-Fi is down, because the client cannot tell then that the code ran out, and the owner could type a dead code.
+  if (backendClient != nullptr && backendClient->state() == wattlink::ClientState::ShowCode && wifi.connected()) {
+    lastPairingSeconds = -1;
+    const char *code = backendClient->claimCode();
+    if (strcmp(code, shownClaim) != 0) {
+      snprintf(shownClaim, sizeof(shownClaim), "%s", code);
+      oled.show(wattlink::claimScreen(code));
+    }
+    return;
+  }
+  if (shownClaim[0] != '\0') {
+    // The code is gone (claimed, expired or renewed), or the Wi-Fi is down, so the home screen comes back.
+    drawHome(true);
     return;
   }
   if (lastPairingSeconds != -1) {
@@ -264,13 +301,17 @@ static const char *clientEventName(wattlink::ClientEventKind kind) {
   return "unknown";
 }
 
-// One line for each event of the client. The claim code goes to the serial port until the display has a screen for it. It is the code that the owner
-// types in the app, and it ends after a few minutes. The key and the key hash are never printed. For RequestFailed the value is the kind of failure.
+// One line for each event of the client. The claim code goes to the serial port as well as to the display. It is the code that the owner types in the app,
+// and it ends after a few minutes. The key and the key hash are never printed. For RequestFailed the value is the kind of failure.
 static void logClientEvent(const wattlink::ClientEvent &event) {
   if (event.kind == wattlink::ClientEventKind::CodeShown) {
     Serial.printf("Backend: claim code %s, valid for %lu seconds\n", backendClient->claimCode(),
                   static_cast<unsigned long>(backendClient->claimSecondsLeft(millis())));
     return;
+  }
+  if (event.kind == wattlink::ClientEventKind::BatchStored) {
+    batchSeen = true;
+    lastBatchStoredMs = millis();
   }
   Serial.printf("Backend: %s, status %d, value %lu\n", clientEventName(event.kind), event.status, static_cast<unsigned long>(event.value));
 }
