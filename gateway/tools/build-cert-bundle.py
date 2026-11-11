@@ -5,6 +5,7 @@ The build stops when one of the two lists is not the file that its .sha256 file 
 against a change of all of the files together, which a review has to read, see certs/README.md. The generated file is not committed.
 """
 
+import datetime
 import importlib.util
 import os
 
@@ -23,7 +24,11 @@ try:
     for name in ("cacert.pem", "extra-roots.pem"):
         texts.append(generator.load_pinned_list(os.path.join(certs_dir, name), os.path.join(certs_dir, name + ".sha256")))
     bundle = generator.make_bundle(texts)
-except generator.BundleError as error:
+    # The core does not check the dates of a root, but the certificates that a server sends have dates. A root of the extra file ends one day, and the
+    # build says so for six months before, so nobody learns it from a hub that fails.
+    for end, name in generator.roots_ending_soon([texts[1]], datetime.date.today(), 183):
+        print("WARNING: an extra root certificate ends on %s (%s), see certs/README.md" % (end, name.decode("latin-1", errors="replace").strip()))
+except (generator.BundleError, OSError, UnicodeDecodeError) as error:
     raise SystemExit("the bundle of root certificates is not made, because %s" % error)
 
 current = None

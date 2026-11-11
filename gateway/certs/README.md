@@ -13,11 +13,19 @@ The hub checks the certificate of the backend against a bundle of root certifica
 
 The server of the backend (checked with `openssl s_client` on 2026-11-11) sends three certificates, which are its own, `GTS WE1`, and `GTS Root R4` cross signed by `GlobalSign Root CA`. The check of the core looks for the issuer of the last certificate that the server sends, and not for a root that is higher up. That issuer is `GlobalSign Root CA`, which Mozilla no longer lists, so the first build of the hub with only the list of Mozilla failed every request with `Failed to verify certificate` (seen on a board on 2026-11-11). The root was downloaded from https://secure.globalsign.com/cacert/root-r1.crt, its SHA-256 fingerprint is the one that GlobalSign publishes, and `openssl verify` accepts the cross signed certificate of the server with it. The test of the generator pins the fingerprint.
 
-The root is valid until 2028-01-28. Look at it again before that date. A root can vouch for any site, so this one widens what the hub trusts by one well known root that Mozilla dropped.
+The root is valid until 2028-01-28. The core checks only the public key of a root in the bundle and never its dates, so the root itself does not stop working on that day. What ends on that day is the cross signed `GTS Root R4` certificate that the server sends, which the hub then refuses as expired. A hub fails on every request after that day if the server still sends that certificate. A server that sends a chain that ends in `GTS WE1` is checked against `GTS Root R4`, which is in the list of Mozilla and is valid until 2036. Before 2028-01-28 look at what the server sends (`openssl s_client -connect <host>:443 -showcerts`) and renew this file in step with it. The build prints a warning for six months before the end of an extra root, and the test `test_the_end_of_an_extra_root_is_found_months_before_it` checks that the warning works.
+
+A root can vouch for any site, so this one widens what the hub trusts by one well known root that Mozilla dropped. The hash, the fingerprint in the test and the file are in the same pull request, so a person who changes the file can change them together, and nothing in the code catches that. The review has to read the diff of `extra-roots.pem` and compare the fingerprint with the one that the authority publishes.
 
 ## A backend with its own certificate authority
 
-A person who hosts their own backend can add the root of its certificate authority to `extra-roots.pem` (the text of a PEM certificate, with a short comment above it), put the new SHA-256 of the file in `extra-roots.pem.sha256`, and put the new hash of the bundle in `EXPECTED_FULL_BUNDLE_SHA256` in `gateway/tools/test-make-cert-bundle.py`. The build and the test then use the new file. A hub trusts only what its own firmware holds, so such a person builds and flashes their own firmware.
+A person who hosts their own backend can add the root of its certificate authority to `extra-roots.pem` (the text of a PEM certificate, with a short comment above it). Then they do these things.
+
+1. Put the new SHA-256 of the file in `extra-roots.pem.sha256`.
+2. Add the SHA-256 fingerprint of the new certificate to `EXTRA_ROOT_FINGERPRINTS` in `gateway/tools/test-make-cert-bundle.py`.
+3. Put the new hash of the bundle in `EXPECTED_FULL_BUNDLE_SHA256` in the same file, and run the test.
+
+The build and the test then use the new file. A hub trusts only what its own firmware holds, so such a person builds and flashes their own firmware. A root of a certificate authority can vouch for any host, so only a root that its owner controls and keeps safe belongs here. The generator refuses two certificates that have one subject and two keys, and it keeps a root that two files both hold once.
 
 ## Why a bundle of our own
 

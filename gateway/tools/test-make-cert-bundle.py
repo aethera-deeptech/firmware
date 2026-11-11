@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """Tests of make-cert-bundle.py. Run it with: python3 gateway/tools/test-make-cert-bundle.py"""
 
+import base64
+import datetime
 import hashlib
 import importlib.util
 import os
@@ -22,6 +24,9 @@ EXPECTED_BUNDLE_SHA256 = "8ca330673e7ecd07610eecfaffd23aba8b9ceca10a381d3878f268
 EXPECTED_FULL_BUNDLE_SHA256 = "cb82c296d50ef4ac58d193b4c27a7ce52f5a7e2d5986615b0239fa776349a787"
 # The SHA-256 fingerprint of GlobalSign Root CA (R1), as GlobalSign publishes it. The server of the backend sends GTS Root R4 cross signed by this root.
 GLOBALSIGN_R1_FINGERPRINT = "ebd41040e4bb3ec742c9e381d31ef2a41a48b6685c96e7cef3c1df6cd4331c99"
+# The SHA-256 fingerprints of every certificate that certs/extra-roots.pem may hold. A person who adds a root of their own certificate authority adds its
+# fingerprint here, so a root that nobody looked at cannot get into the bundle in the same step as its file.
+EXTRA_ROOT_FINGERPRINTS = {GLOBALSIGN_R1_FINGERPRINT}
 
 
 def read(name):
@@ -83,24 +88,71 @@ class ExtraRoots(unittest.TestCase):
             pinned = handle.read().split()[0]
         self.assertEqual(pinned, digest)
 
-    def test_the_file_of_extra_roots_holds_globalsign_r1_and_nothing_else(self):
+    def test_the_file_of_extra_roots_holds_the_listed_roots_and_nothing_else(self):
         der_list = generator.pem_certificates(read("extra-roots.pem"))
-        self.assertEqual(1, len(der_list))
-        self.assertEqual(GLOBALSIGN_R1_FINGERPRINT, hashlib.sha256(der_list[0]).hexdigest())
-        name, _ = generator.subject_and_key(der_list[0])
-        self.assertIn(b"GlobalSign Root CA", name)
+        fingerprints = [hashlib.sha256(der).hexdigest() for der in der_list]
+        self.assertEqual(sorted(EXTRA_ROOT_FINGERPRINTS), sorted(fingerprints))
+        self.assertEqual(len(EXTRA_ROOT_FINGERPRINTS), len(read("extra-roots.pem").split("-----BEGIN CERTIFICATE-----")) - 1)
+
+    def test_globalsign_r1_is_listed_and_is_the_root_that_it_claims_to_be(self):
+        self.assertIn(GLOBALSIGN_R1_FINGERPRINT, EXTRA_ROOT_FINGERPRINTS)
+        for der in generator.pem_certificates(read("extra-roots.pem")):
+            if hashlib.sha256(der).hexdigest() == GLOBALSIGN_R1_FINGERPRINT:
+                name, _ = generator.subject_and_key(der)
+                self.assertIn(b"GlobalSign Root CA", name)
+                self.assertEqual(name, generator.issuer_name(der))
+                self.assertEqual(datetime.date(2028, 1, 28), generator.validity_end(der))
 
     def test_the_bundle_of_both_files_is_the_expected_one_and_holds_one_more_root(self):
         mozilla = read("cacert.pem")
         bundle = generator.make_bundle([mozilla, read("extra-roots.pem")])
         self.assertEqual(EXPECTED_FULL_BUNDLE_SHA256, hashlib.sha256(bundle).hexdigest())
-        self.assertEqual(mozilla.count("-----BEGIN CERTIFICATE-----") + 1, len(entries(bundle)))
+        self.assertEqual(mozilla.count("-----BEGIN CERTIFICATE-----") + len(EXTRA_ROOT_FINGERPRINTS), len(entries(bundle)))
 
     def test_the_issuer_of_the_last_certificate_of_the_backend_is_in_the_bundle(self):
         found = entries(generator.make_bundle([read("cacert.pem"), read("extra-roots.pem")]))
         names = b"".join(name for name, _ in found)
         for root in (b"GlobalSign Root CA", b"GTS Root R4"):
             self.assertIn(root, names)
+
+    def test_the_top_certificate_that_the_server_sends_has_its_issuer_in_the_bundle_and_only_with_the_extra_root(self):
+        # The server of the backend sends its own certificate, GTS WE1 and GTS Root R4 cross signed by GlobalSign Root CA. The core looks up the issuer of the
+        # last one in the bundle. This is the certificate of the chain as the server sent it on 2026-11-11, and it ends on 2028-01-28.
+        with open(os.path.join(HERE, "fixtures", "gts-root-r4-cross-signed.pem"), "r", encoding="ascii") as handle:
+            top = generator.pem_certificates(handle.read())[0]
+        issuer = generator.issuer_name(top)
+        with_extra = [name for name, _ in entries(generator.make_bundle([read("cacert.pem"), read("extra-roots.pem")]))]
+        without_extra = [name for name, _ in entries(generator.make_bundle([read("cacert.pem")]))]
+        self.assertIn(issuer, with_extra)
+        self.assertNotIn(issuer, without_extra)
+
+    def test_the_end_of_an_extra_root_is_found_months_before_it(self):
+        texts = [read("extra-roots.pem")]
+        self.assertEqual([], generator.roots_ending_soon(texts, datetime.date(2026, 11, 11), 183))
+        soon = generator.roots_ending_soon(texts, datetime.date(2027, 10, 1), 183)
+        self.assertEqual([datetime.date(2028, 1, 28)], [end for end, _ in soon])
+        self.assertEqual(1, len(generator.roots_ending_soon(texts, datetime.date(2028, 2, 1), 183)))
+
+    def test_two_certificates_with_one_subject_and_two_keys_are_refused(self):
+        text = read("cacert.pem")
+        der = generator.pem_certificates(text)[0]
+        _, key = generator.subject_and_key(der)
+        changed = bytearray(der)
+        changed[der.find(key) + len(key) - 1] ^= 0x01
+        pem = "-----BEGIN CERTIFICATE-----\n%s\n-----END CERTIFICATE-----\n" % base64.b64encode(bytes(changed)).decode("ascii")
+        first = text.index("-----BEGIN CERTIFICATE-----")
+        second = text.index("-----BEGIN CERTIFICATE-----", first + 1)
+        with self.assertRaises(generator.BundleError):
+            generator.make_bundle([text[first:second], pem])
+
+    def test_a_root_that_two_different_files_both_hold_is_in_the_bundle_once(self):
+        text = read("cacert.pem")
+        starts = [text.index("-----BEGIN CERTIFICATE-----")]
+        for _ in range(2):
+            starts.append(text.index("-----BEGIN CERTIFICATE-----", starts[-1] + 1))
+        file_a = text[starts[0] : starts[2]]  # roots 1 and 2
+        file_b = text[starts[1] :]  # root 2 and all the others
+        self.assertEqual(generator.make_bundle([text]), generator.make_bundle([file_a, file_b]))
 
     def test_a_root_that_two_files_both_hold_is_in_the_bundle_once(self):
         extra = read("extra-roots.pem")
