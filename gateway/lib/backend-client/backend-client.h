@@ -157,7 +157,7 @@ struct ClientEvent {
 class BackendClient {
  public:
   // The batch builder must have been made with kClientBodyBytes as its budget, and begin() refuses a builder with a larger one. The object holds the buffer of
-  // the body and of the answer, about 26 KB, so it must be a static object and never on the stack of a task (like SampleStore).
+  // the body and of the answer, about 26 KB, so it must live for the whole run, as a static object or in the heap, and never on the stack of a task. The hub makes it in the heap, because the static data of the chip is nearly full.
   BackendClient(HttpPort &http, ClientStore &store, BatchBuilder &builder, CommandRelay &relay, const ClientConfig &config);
 
   BackendClient(const BackendClient &) = delete;

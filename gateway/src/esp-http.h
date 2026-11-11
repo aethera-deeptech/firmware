@@ -20,7 +20,8 @@ namespace wattlink {
 // with HttpFailure::Tls and never connects, and nothing here switches the check off. The check needs the system time of the chip (time()), because mbedTLS
 // compares it with the dates of the certificates, so the caller sets it from a time server first. A request fails with HttpFailure::Clock until it is set.
 //
-// The object holds the stack of its task (16 KB), so it must be a static object. Nothing in it prints a key, an address or a body.
+// The object holds the stack of its task (16 KB), so it must live for the whole run, as a static object or in the heap, and is never freed. The hub makes it in
+// the heap, because the static data of the chip is nearly full. Nothing in it prints a key, an address or a body.
 class EspHttpPort : public HttpPort {
  public:
   // The host is the name of the backend, without the scheme, and it must stay valid. The bundle is the binary that WiFiClientSecure::setCACertBundle takes.

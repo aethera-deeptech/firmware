@@ -1,14 +1,19 @@
 #include <Arduino.h>
+#include <esp_sntp.h>
 #include <esp_system.h>
 #include <nvs.h>
+#include <time.h>
 #include <new>
 
+#include "backend-client.h"
 #include "batch-builder.h"
 #include "boot-counter.h"
 #include "command-relay.h"
 #include "config.h"
 #include "crypto-selftest.h"
+#include "esp-http.h"
 #include "espnow-radio.h"
+#include "flash-client-store.h"
 #include "flash-command-log.h"
 #include "hub-button.h"
 #include "hub-link.h"
@@ -61,12 +66,31 @@ alignas(wattlink::HubLink) static uint8_t hubLinkMemory[sizeof(wattlink::HubLink
 static wattlink::HubPairing *hubPairing = nullptr;
 static wattlink::HubLink *hubLink = nullptr;
 // The relay of the commands of the backend. It sends a command to its plug with the next frame of that plug, so it needs the link layer and the boot
-// number, and it is built next to them. The backend client does not hand it commands yet, so for now it only reads its log and follows the frames.
+// number, and it is built next to them. The backend client hands it the commands of the answers, and it sends them to the plugs with their next frames.
 // The relay is about 11 KB. The static data of the chip has room for about 124 KB in all, and the pool of samples and the other objects use most of
 // it, so the relay is made in the heap at the start and is never freed. The link stays up when there is no memory for it, and no command is sent.
 static wattlink::NvsCommandBlobStore commandFlash;
 static wattlink::FlashCommandLog commandLog(commandFlash);
 static wattlink::CommandRelay *commandRelay = nullptr;
+// The client of the backend, with its HTTPS port. The client is about 26 KB and the port holds the 16 KB stack of its task, so both are made in the heap at the
+// start and are never freed, like the relay. They are made before the Wi-Fi starts, because a TLS connection needs a free block of 48 KB. The roots that
+// the TLS check trusts are embedded by the build (see certs/README.md).
+extern const uint8_t kCaBundle[] asm("_binary_certs_x509_crt_bundle_bin_start");
+static uint32_t chipRandom(void *) {
+  return esp_random();
+}
+static wattlink::FlashClientStore clientStore(settings, &chipRandom, nullptr);
+static wattlink::BatchBuilder batchBuilder(sampleStore, nodes, wattlink::kClientBodyBytes);
+static wattlink::ClientConfig clientConfig;
+static char hardwareId[24];
+static wattlink::EspHttpPort *httpPort = nullptr;
+static wattlink::BackendClient *backendClient = nullptr;
+constexpr uint32_t kClockTryEveryMs = 1000;
+constexpr uint32_t kClockResyncEveryMs = 3600000;
+static bool ntpStarted = false;
+static bool clockSet = false;
+static uint32_t lastClockTryMs = 0;
+static uint32_t lastClockSetMs = 0;
 // The frames that one pass of loop() takes from the queue. HubLink writes flash for a frame, so the button and the Wi-Fi watch must still get their turn.
 constexpr int kFramesPerPass = 4;
 // The time of the last expiry of old samples. The pool drops a sample after about 24 hours, and this keeps the clock reads far from the wrap.
@@ -200,6 +224,138 @@ static void serviceRadio(uint32_t now) {
   }
 }
 
+static const char *clientEventName(wattlink::ClientEventKind kind) {
+  switch (kind) {
+    case wattlink::ClientEventKind::None:
+      return "none";
+    case wattlink::ClientEventKind::ConfigInvalid:
+      return "the configuration is not valid";
+    case wattlink::ClientEventKind::CodeShown:
+      return "claim code ready";
+    case wattlink::ClientEventKind::CodeExpired:
+      return "claim code expired";
+    case wattlink::ClientEventKind::Claimed:
+      return "claimed by the owner";
+    case wattlink::ClientEventKind::ClaimUnknown:
+      return "claim not known, the first batch tests the key";
+    case wattlink::ClientEventKind::ProbeExpired:
+      return "key test ran out, asking for a new code";
+    case wattlink::ClientEventKind::BatchStored:
+      return "batch stored";
+    case wattlink::ClientEventKind::Conflict:
+      return "batch number conflict";
+    case wattlink::ClientEventKind::RateLimited:
+      return "rate limited";
+    case wattlink::ClientEventKind::KeyRefused:
+      return "the key was refused, hold the button for 10 seconds to ask for a new claim code";
+    case wattlink::ClientEventKind::BatchDropped:
+      return "batch dropped";
+    case wattlink::ClientEventKind::RequestFailed:
+      return "request failed";
+    case wattlink::ClientEventKind::BadAnswer:
+      return "answer could not be read";
+    case wattlink::ClientEventKind::NoClock:
+      return "waiting for the time";
+    case wattlink::ClientEventKind::KeyMissing:
+      return "the key could not be read or made";
+    case wattlink::ClientEventKind::BodyError:
+      return "batch could not be written";
+  }
+  return "unknown";
+}
+
+// One line for each event of the client. The claim code goes to the serial port until the display has a screen for it. It is the code that the owner
+// types in the app, and it ends after a few minutes. The key and the key hash are never printed. For RequestFailed the value is the kind of failure.
+static void logClientEvent(const wattlink::ClientEvent &event) {
+  if (event.kind == wattlink::ClientEventKind::CodeShown) {
+    Serial.printf("Backend: claim code %s, valid for %lu seconds\n", backendClient->claimCode(),
+                  static_cast<unsigned long>(backendClient->claimSecondsLeft(millis())));
+    return;
+  }
+  Serial.printf("Backend: %s, status %d, value %lu\n", clientEventName(event.kind), event.status, static_cast<unsigned long>(event.value));
+}
+
+// The client needs the Unix time before it sends a batch, and the TLS check needs it too. The time servers set the system time of the chip. The servers are
+// asked once the Wi-Fi has joined, because the network stack of the chip must run first. The time counts as set only after the first sync of the time
+// servers, and not when the chip kept an old time over a reset, and it must be above the least time that the backend takes. It is handed to the client
+// again every hour, so the client does not drift.
+static void syncClock(uint32_t now) {
+  if (!ntpStarted) {
+    if (!wifi.connected()) {
+      return;
+    }
+    configTime(0, 0, config::kNtpServerA, config::kNtpServerB);
+    ntpStarted = true;
+    Serial.println("Clock: asking the time servers");
+  }
+  if (clockSet ? now - lastClockSetMs < kClockResyncEveryMs : now - lastClockTryMs < kClockTryEveryMs) {
+    return;
+  }
+  lastClockTryMs = now;
+  if (sntp_get_sync_status() != SNTP_SYNC_STATUS_COMPLETED) {
+    return;
+  }
+  const time_t seconds = time(nullptr);
+  if (seconds < static_cast<time_t>(wattlink::kMinUnixSeconds)) {
+    return;
+  }
+  backendClient->setUnixTime(now, static_cast<uint32_t>(seconds));
+  if (!clockSet) {
+    Serial.printf("Clock: set from the time server, Unix time %lu\n", static_cast<unsigned long>(seconds));
+  }
+  clockSet = true;
+  lastClockSetMs = now;
+}
+
+static void serviceBackend(uint32_t now) {
+  if (backendClient == nullptr) {
+    return;
+  }
+  syncClock(now);
+  // The client waits until the time is set. A request before that would fail the check of the certificate and would only make the pause grow.
+  backendClient->update(now, wifi.connected() && clockSet);
+  wattlink::ClientEvent event;
+  while (backendClient->takeEvent(&event)) {
+    logClientEvent(event);
+  }
+}
+
+// Makes the HTTPS port and the client in the heap and starts them. Nothing here sends a request, the loop does that. When there is no memory, or the
+// task cannot be made, the hub goes on without a client, and the line says why.
+static void startBackendClient() {
+  uint8_t mac[wattlink::kMacSize];
+  esp_read_mac(mac, ESP_MAC_WIFI_STA);
+  snprintf(hardwareId, sizeof(hardwareId), "ESP32-%02X%02X%02X%02X%02X%02X", mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+  clientConfig.hardwareId = hardwareId;
+  clientConfig.firmware = config::kFirmwareVersion;
+  clientConfig.sha256 = &wattlink::mbedtlsSha256;
+  clientConfig.sha256Context = nullptr;
+
+  httpPort = new (std::nothrow) wattlink::EspHttpPort(config::kBackendHost, config::kBackendPort, kCaBundle);
+  if (httpPort == nullptr) {
+    Serial.println("Backend: not started, no memory for the HTTPS port");
+    return;
+  }
+  if (!httpPort->start()) {
+    delete httpPort;
+    httpPort = nullptr;
+    Serial.println("Backend: not started, the task of the HTTPS port could not be made");
+    return;
+  }
+  backendClient = new (std::nothrow) wattlink::BackendClient(*httpPort, clientStore, batchBuilder, *commandRelay, clientConfig);
+  if (backendClient == nullptr) {
+    Serial.println("Backend: not started, no memory for the client");
+    return;
+  }
+  if (!backendClient->begin(millis())) {
+    delete backendClient;
+    backendClient = nullptr;
+    Serial.println("Backend: not started, the settings of the client are not valid");
+    return;
+  }
+  Serial.printf("Backend: client started as %s for %s, state %d\n", hardwareId, config::kBackendHost, static_cast<int>(backendClient->state()));
+}
+
 void setup() {
   Serial.begin(115200);
   pinMode(config::kHubButtonPin, INPUT_PULLUP);
@@ -261,8 +417,14 @@ void setup() {
     } else {
       Serial.println("Commands: no memory for the relay, no command will be sent");
     }
+    if (commandRelay != nullptr) {
+      startBackendClient();
+    } else {
+      Serial.println("Backend: not started, the client needs the relay");
+    }
   } else {
     Serial.println("Link: off, the hub does not take frames");
+    Serial.println("Backend: not started, the link layer is off");
   }
   // The flash of the settings, the nodes and the command log shares one NVS partition of 20 KB. This line shows how full it is, so a log that grows
   // can be seen before a write fails.
@@ -274,8 +436,9 @@ void setup() {
   } else {
     Serial.println("NVS: the statistics could not be read");
   }
-  // The heap is read before the radio starts and after it, to see what is left for the backend client. A hub that holds its pool as a static
-  // object has the 58 KB in the figure of the static memory and not in the heap.
+  // The heap is read before the radio starts and after it. The relay, the client and the HTTPS port are made before these lines, so the figures show
+  // what is left for the TLS connection, which needs a free block of 48 KB. A hub that holds its pool as a static object has the 58 KB in the figure
+  // of the static memory and not in the heap.
   Serial.printf("Heap before Wi-Fi: %lu free, largest block %lu\n", static_cast<unsigned long>(ESP.getFreeHeap()),
                 static_cast<unsigned long>(ESP.getMaxAllocHeap()));
   wifi.begin(millis());
@@ -304,6 +467,7 @@ void loop() {
 
   wifi.update(now);
   serviceRadio(now);
+  serviceBackend(now);
   drawScreen(now);
 
   switch (button.update(pressed, now)) {
@@ -354,8 +518,27 @@ void loop() {
       }
       break;
     case wattlink::ButtonEvent::NewCode:
-      // The hold of 10 seconds asks the backend client for a new claim code. The client is not started by this program yet.
-      Serial.println("Button: new claim code asked, the backend client is not started yet");
+      // The hold of 10 seconds throws the key away and asks the backend for a new claim code. It also works on a hub that is not refused.
+      if (backendClient == nullptr) {
+        Serial.println("Button: new claim code not asked, the backend client is not running");
+        break;
+      }
+      if (backendClient->busy()) {
+        Serial.println("Button: new claim code not asked, a request runs, hold the button again");
+        break;
+      }
+      // The new key is made from the random numbers of the chip, which are true random only while the radio runs.
+      if (!radio.active()) {
+        Serial.println("Button: new claim code not asked, the Wi-Fi radio is off, join the Wi-Fi first");
+        break;
+      }
+      if (backendClient->requestNewEnroll(now)) {
+        Serial.println("Button: new claim code scheduled, the key was renewed, the code comes when the Wi-Fi and the clock are ready");
+      } else if (backendClient->state() == wattlink::ClientState::NeedEnroll) {
+        Serial.println("Button: new claim code scheduled, but the flash refused the new key, so the old key stays");
+      } else {
+        Serial.println("Button: new claim code not asked, the flash refused the change, hold the button again");
+      }
       break;
     case wattlink::ButtonEvent::None:
       break;
