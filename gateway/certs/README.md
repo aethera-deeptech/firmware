@@ -27,6 +27,8 @@ A person who hosts their own backend can add the root of its certificate authori
 
 The build and the test then use the new file. A hub trusts only what its own firmware holds, so such a person builds and flashes their own firmware. A root of a certificate authority can vouch for any host, so only a root that its owner controls and keeps safe belongs here. The generator refuses two certificates that have one subject and two keys, and it keeps a root that two files both hold once.
 
+If the backend uses another hostname or port, set `kBackendHost` and `kBackendPort` in `gateway/src/config.h` before the build. The firmware connects to that address, and the bundle only decides whether the certificate that comes back is trusted.
+
 ## Why a bundle of our own
 
 The Arduino-ESP32 core 2.0.17 has no bundle file, and `WiFiClientSecure::setCACertBundle` needs one. The generator of Espressif needs the Python package `cryptography`, so the repository has a generator that uses the standard library only. Its output is the same bytes as the output of the computation of Espressif (the subject of each certificate and its public key as DER, sorted by the subject), and the test pins that result.

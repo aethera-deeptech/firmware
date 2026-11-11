@@ -34,6 +34,15 @@ def read(name):
         return handle.read()
 
 
+def unique_entries(texts):
+    """The distinct (subject, key) pairs of all the certificates in the texts. A root that two files both hold counts once."""
+    found = set()
+    for text in texts:
+        for der in generator.pem_certificates(text):
+            found.add(generator.subject_and_key(der))
+    return found
+
+
 def entries(bundle):
     count = struct.unpack(">H", bundle[:2])[0]
     pos = 2
@@ -107,7 +116,9 @@ class ExtraRoots(unittest.TestCase):
         mozilla = read("cacert.pem")
         bundle = generator.make_bundle([mozilla, read("extra-roots.pem")])
         self.assertEqual(EXPECTED_FULL_BUNDLE_SHA256, hashlib.sha256(bundle).hexdigest())
-        self.assertEqual(mozilla.count("-----BEGIN CERTIFICATE-----") + len(EXTRA_ROOT_FINGERPRINTS), len(entries(bundle)))
+        # The count follows the distinct roots of both files, so it stays right when Mozilla adds a root that the extra file holds.
+        self.assertEqual(len(unique_entries([mozilla, read("extra-roots.pem")])), len(entries(bundle)))
+        self.assertGreater(len(entries(bundle)), mozilla.count("-----BEGIN CERTIFICATE-----") - 1)
 
     def test_the_issuer_of_the_last_certificate_of_the_backend_is_in_the_bundle(self):
         found = entries(generator.make_bundle([read("cacert.pem"), read("extra-roots.pem")]))
@@ -127,11 +138,15 @@ class ExtraRoots(unittest.TestCase):
         self.assertNotIn(issuer, without_extra)
 
     def test_the_end_of_an_extra_root_is_found_months_before_it(self):
+        # Only GlobalSign R1 is looked at, so a root that a person adds to the file, with an end of its own, does not change this test.
         texts = [read("extra-roots.pem")]
-        self.assertEqual([], generator.roots_ending_soon(texts, datetime.date(2026, 11, 11), 183))
-        soon = generator.roots_ending_soon(texts, datetime.date(2027, 10, 1), 183)
-        self.assertEqual([datetime.date(2028, 1, 28)], [end for end, _ in soon])
-        self.assertEqual(1, len(generator.roots_ending_soon(texts, datetime.date(2028, 2, 1), 183)))
+
+        def globalsign(found):
+            return [end for end, name in found if b"GlobalSign Root CA" in name]
+
+        self.assertEqual([], globalsign(generator.roots_ending_soon(texts, datetime.date(2026, 11, 11), 183)))
+        self.assertEqual([datetime.date(2028, 1, 28)], globalsign(generator.roots_ending_soon(texts, datetime.date(2027, 10, 1), 183)))
+        self.assertEqual([datetime.date(2028, 1, 28)], globalsign(generator.roots_ending_soon(texts, datetime.date(2028, 2, 1), 183)))
 
     def test_two_certificates_with_one_subject_and_two_keys_are_refused(self):
         text = read("cacert.pem")
