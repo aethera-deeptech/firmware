@@ -1,4 +1,5 @@
 #include <Arduino.h>
+#include <esp_sntp.h>
 #include <esp_system.h>
 #include <nvs.h>
 #include <time.h>
@@ -65,7 +66,7 @@ alignas(wattlink::HubLink) static uint8_t hubLinkMemory[sizeof(wattlink::HubLink
 static wattlink::HubPairing *hubPairing = nullptr;
 static wattlink::HubLink *hubLink = nullptr;
 // The relay of the commands of the backend. It sends a command to its plug with the next frame of that plug, so it needs the link layer and the boot
-// number, and it is built next to them. The backend client does not hand it commands yet, so for now it only reads its log and follows the frames.
+// number, and it is built next to them. The backend client hands it the commands of the answers, and it sends them to the plugs with their next frames.
 // The relay is about 11 KB. The static data of the chip has room for about 124 KB in all, and the pool of samples and the other objects use most of
 // it, so the relay is made in the heap at the start and is never freed. The link stays up when there is no memory for it, and no command is sent.
 static wattlink::NvsCommandBlobStore commandFlash;
@@ -84,10 +85,9 @@ static wattlink::ClientConfig clientConfig;
 static char hardwareId[24];
 static wattlink::EspHttpPort *httpPort = nullptr;
 static wattlink::BackendClient *backendClient = nullptr;
-// The backend refuses a time before this one, so the clock counts as set only above it.
-constexpr uint32_t kUnixTimeMin = 1700000000u;
 constexpr uint32_t kClockTryEveryMs = 1000;
 constexpr uint32_t kClockResyncEveryMs = 3600000;
+static bool ntpStarted = false;
 static bool clockSet = false;
 static uint32_t lastClockTryMs = 0;
 static uint32_t lastClockSetMs = 0;
@@ -275,15 +275,28 @@ static void logClientEvent(const wattlink::ClientEvent &event) {
   Serial.printf("Backend: %s, status %d, value %lu\n", clientEventName(event.kind), event.status, static_cast<unsigned long>(event.value));
 }
 
-// The client needs the Unix time before it sends a batch, and the TLS check needs it too. The time servers set the system time of the chip, and this
-// hands it to the client once it is above the least time that the backend takes. It is handed again every hour, so the client does not drift.
+// The client needs the Unix time before it sends a batch, and the TLS check needs it too. The time servers set the system time of the chip. The servers are
+// asked once the Wi-Fi has joined, because the network stack of the chip must run first. The time counts as set only after the first sync of the time
+// servers, and not when the chip kept an old time over a reset, and it must be above the least time that the backend takes. It is handed to the client
+// again every hour, so the client does not drift.
 static void syncClock(uint32_t now) {
+  if (!ntpStarted) {
+    if (!wifi.connected()) {
+      return;
+    }
+    configTime(0, 0, config::kNtpServerA, config::kNtpServerB);
+    ntpStarted = true;
+    Serial.println("Clock: asking the time servers");
+  }
   if (clockSet ? now - lastClockSetMs < kClockResyncEveryMs : now - lastClockTryMs < kClockTryEveryMs) {
     return;
   }
   lastClockTryMs = now;
+  if (sntp_get_sync_status() != SNTP_SYNC_STATUS_COMPLETED) {
+    return;
+  }
   const time_t seconds = time(nullptr);
-  if (seconds < static_cast<time_t>(kUnixTimeMin)) {
+  if (seconds < static_cast<time_t>(wattlink::kMinUnixSeconds)) {
     return;
   }
   backendClient->setUnixTime(now, static_cast<uint32_t>(seconds));
@@ -299,7 +312,8 @@ static void serviceBackend(uint32_t now) {
     return;
   }
   syncClock(now);
-  backendClient->update(now, wifi.connected());
+  // The client waits until the time is set. A request before that would fail the check of the certificate and would only make the pause grow.
+  backendClient->update(now, wifi.connected() && clockSet);
   wattlink::ClientEvent event;
   while (backendClient->takeEvent(&event)) {
     logClientEvent(event);
@@ -323,6 +337,7 @@ static void startBackendClient() {
     return;
   }
   if (!httpPort->start()) {
+    delete httpPort;
     httpPort = nullptr;
     Serial.println("Backend: not started, the task of the HTTPS port could not be made");
     return;
@@ -333,11 +348,11 @@ static void startBackendClient() {
     return;
   }
   if (!backendClient->begin(millis())) {
+    delete backendClient;
     backendClient = nullptr;
     Serial.println("Backend: not started, the settings of the client are not valid");
     return;
   }
-  configTime(0, 0, config::kNtpServerA, config::kNtpServerB);
   Serial.printf("Backend: client started as %s for %s, state %d\n", hardwareId, config::kBackendHost, static_cast<int>(backendClient->state()));
 }
 
@@ -505,13 +520,24 @@ void loop() {
     case wattlink::ButtonEvent::NewCode:
       // The hold of 10 seconds throws the key away and asks the backend for a new claim code. It also works on a hub that is not refused.
       if (backendClient == nullptr) {
-        Serial.println("Button: new claim code asked, the backend client is not running");
+        Serial.println("Button: new claim code not asked, the backend client is not running");
+        break;
+      }
+      if (backendClient->busy()) {
+        Serial.println("Button: new claim code not asked, a request runs, hold the button again");
+        break;
+      }
+      // The new key is made from the random numbers of the chip, which are true random only while the radio runs.
+      if (!radio.active()) {
+        Serial.println("Button: new claim code not asked, the Wi-Fi radio is off, join the Wi-Fi first");
         break;
       }
       if (backendClient->requestNewEnroll(now)) {
         Serial.println("Button: new claim code asked, the key was renewed");
+      } else if (backendClient->state() == wattlink::ClientState::NeedEnroll) {
+        Serial.println("Button: new claim code asked, but the flash refused the new key, so the old key stays");
       } else {
-        Serial.println("Button: new claim code not asked, a request runs or the flash refused, hold the button again");
+        Serial.println("Button: new claim code not asked, the flash refused the change, hold the button again");
       }
       break;
     case wattlink::ButtonEvent::None:
